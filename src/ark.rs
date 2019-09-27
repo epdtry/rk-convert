@@ -1,9 +1,9 @@
 use std::io::{self, Read, Seek, SeekFrom, Cursor};
 use std::iter;
-use std::str;
 use byteorder::{ReadBytesExt, LE};
 use zstd;
 use crate::xxtea;
+use crate::read_from::{ReadFrom, ReadExt};
 
 pub struct ArkFile<T> {
     file: T,
@@ -53,7 +53,7 @@ impl<T: Read + Seek> ArkFile<T> {
 
         let mut entries = Vec::with_capacity(file_count);
         for _ in 0 .. file_count {
-            entries.push(read_entry(&mut reader)?);
+            entries.push(reader.read_one::<ArkEntry>()?);
         }
         Ok(entries)
     }
@@ -80,37 +80,30 @@ impl<T: Read + Seek> ArkFile<T> {
     }
 }
 
-fn read_entry(r: &mut impl Read) -> io::Result<ArkEntry> {
-    let mut buf = [0; METADATA_SIZE];
-    r.read_exact(&mut buf);
+impl ReadFrom for ArkEntry {
+    fn read_from<R: Read + ?Sized>(r: &mut R) -> io::Result<ArkEntry> {
+        let mut buf = [0; METADATA_SIZE];
+        r.read_exact(&mut buf)?;
 
-    let mut curs = Cursor::new(&buf as &[u8]);
-    let filename = read_entry_str(&mut curs)?;
-    let directory = read_entry_str(&mut curs)?;
-    let offset = curs.read_u32::<LE>()?;
-    let content_size = curs.read_u32::<LE>()?;
-    let compressed_size = curs.read_u32::<LE>()?;
-    let encrypted_size = curs.read_u32::<LE>()?;
-    let _timestamp = curs.read_u32::<LE>()?;
-    let mut md5_sum = [0; 4];
-    curs.read_u32_into::<LE>(&mut md5_sum)?;
-    let _flags = curs.read_u32::<LE>()?;
-    assert!(curs.position() == METADATA_SIZE as u64);
+        let mut curs = Cursor::new(&buf as &[u8]);
+        let filename = curs.read_fixed_str(&mut [0; 128])?;
+        let directory = curs.read_fixed_str(&mut [0; 128])?;
+        let offset: u32 = curs.read_one()?;
+        let content_size: u32 = curs.read_one()?;
+        let compressed_size: u32 = curs.read_one()?;
+        let encrypted_size: u32 = curs.read_one()?;
+        let _timestamp: u32 = curs.read_one()?;
+        let _md5_sum: [u32; 4] = curs.read_one()?;
+        let _flags: u32 = curs.read_u32::<LE>()?;
+        assert!(curs.position() == METADATA_SIZE as u64);
 
-    Ok(ArkEntry {
-        filename, directory,
-        offset, content_size, compressed_size, encrypted_size,
-    })
+        Ok(ArkEntry {
+            filename, directory,
+            offset, content_size, compressed_size, encrypted_size,
+        })
+    }
 }
 
-fn read_entry_str(r: &mut impl Read) -> io::Result<String> {
-    let mut buf = [0; 128];
-    r.read_exact(&mut buf)?;
-    let end = buf.iter().position(|&x| x == 0).unwrap_or(buf.len());
-    let s = str::from_utf8(&buf[..end])
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    Ok(s.to_owned())
-}
 
 
 const XXTEA_KEY: [u32; 4] = [0x3d5b2a34, 0x923fff10, 0x00e346a4, 0x0c74902b];
