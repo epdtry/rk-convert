@@ -20,15 +20,15 @@ const SEC_VERTEX_WEIGHT: u32 = 17;
 #[derive(Clone, Debug, Default)]
 pub struct Model {
     pub verts: Vec<Vertex>,
-    pub tris: Vec<(usize, usize, usize)>,
+    pub tris: Vec<[usize; 3]>,
     pub parts: Vec<Part>,
     pub mat_name: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct Vertex {
-    pub pos: (f32, f32, f32),
-    pub uv: (i16, i16),
+    pub pos: [f32; 3],
+    pub uv: [i16; 2],
     pub bone_weights: [BoneWeight; 4],
 }
 
@@ -175,12 +175,8 @@ impl<T: Read + Seek> ModelFile<T> {
             })?;
 
         m.verts.reserve(verts.len());
-        for ([x,y,z], [u,v]) in verts {
-            m.verts.push(Vertex {
-                pos: (x, y, z),
-                uv: (u, v),
-                .. Vertex::default()
-            });
+        for (pos, uv) in verts {
+            m.verts.push(Vertex { pos, uv, .. Vertex::default() });
         }
 
         if vert_weights.len() > 0 {
@@ -198,7 +194,7 @@ impl<T: Read + Seek> ModelFile<T> {
         assert!(indices.len() % 3 == 0, "expected a multiple of three indices");
         m.tris.reserve(indices.len() / 3);
         for xs in indices.chunks_exact(3) {
-            m.tris.push((xs[0] as usize, xs[1] as usize, xs[2] as usize));
+            m.tris.push([xs[0] as usize, xs[1] as usize, xs[2] as usize]);
         }
 
         m.parts.reserve(part_names.len());
