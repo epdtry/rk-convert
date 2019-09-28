@@ -10,6 +10,7 @@ fn io_main() -> io::Result<()> {
     let mut mf = ModelFile::new(File::open(&args[1])?);
     let m = mf.read_model()?;
     println!("got {} verts, {} tris", m.verts.len(), m.tris.len());
+    println!("material: {:?}", m.mat_name);
     Ok(())
 }
 

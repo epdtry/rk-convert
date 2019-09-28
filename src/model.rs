@@ -1,3 +1,4 @@
+use std::convert::TryInto;
 use std::io::{self, Read, Seek, SeekFrom, Cursor};
 use std::iter;
 use std::ops::Range;
@@ -21,6 +22,7 @@ pub struct Model {
     pub verts: Vec<Vertex>,
     pub tris: Vec<(usize, usize, usize)>,
     pub parts: Vec<Part>,
+    pub mat_name: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -163,13 +165,14 @@ impl<T: Read + Seek> ModelFile<T> {
         //let bones = self.read_tagged_section(&headers, SEC_BONE)?;
         let vert_weights: Vec<([u8; 4], [u16; 4])> =
             self.read_tagged_section(&headers, SEC_VERTEX_WEIGHT)?;
-        /*
-        let material_names: Vec<String> =
-            self.read_tagged_section_with(&headers, SEC_SUBOBJ_NAME, |r| {
-                let mut strs = 
-                r.read_fixed_str(&mut [0; 64])
+        let materials: Vec<([String; 6], [f32; 4])> =
+            self.read_tagged_section_with(&headers, SEC_MATERIAL, |r| {
+                let strs: Vec<_> = iter::from_fn(|| Some(r.read_fixed_str(&mut [0; 64])))
+                    .take(6).collect::<io::Result<Vec<_>>>()?;
+                let strs: &[_; 6] = (&strs as &[_]).try_into().unwrap();
+                let vals = r.read_one::<[f32; 4]>()?;
+                Ok((strs.clone(), vals))
             })?;
-            */
 
         m.verts.reserve(verts.len());
         for ([x,y,z], [u,v]) in verts {
@@ -198,12 +201,19 @@ impl<T: Read + Seek> ModelFile<T> {
             m.tris.push((xs[0] as usize, xs[1] as usize, xs[2] as usize));
         }
 
-        println!("{:?}", part_names);
-
         m.parts.reserve(part_names.len());
         assert!(part_names.len() == part_face_ranges.len());
         for (name, range) in part_names.into_iter().zip(part_face_ranges.into_iter()) {
             m.parts.push(Part { name, tris: range });
+        }
+
+        if materials.len() != 0 {
+            assert!(materials.len() == 1, "expected only one set of materials");
+            m.mat_name = materials[0].0.iter().find(|s| s.len() > 0).cloned();
+            if let Some(ref name) = m.mat_name {
+                assert!(materials[0].0.iter().all(|s| s.len() == 0 || s == name),
+                    "expected all material names to match, but got {:?}", materials[0].0);
+            }
         }
 
         Ok(m)
