@@ -189,18 +189,6 @@ impl<T: Read + Seek> ModelFile<T> {
             m.verts.push(Vertex { pos, uv, .. Vertex::default() });
         }
 
-        if vert_weights.len() > 0 {
-            assert!(vert_weights.len() == m.verts.len());
-            for (vert, (b, w)) in m.verts.iter_mut().zip(vert_weights.into_iter()) {
-                vert.bone_weights = [
-                    BoneWeight { bone: b[0] as usize, weight: w[0] },
-                    BoneWeight { bone: b[1] as usize, weight: w[1] },
-                    BoneWeight { bone: b[2] as usize, weight: w[2] },
-                    BoneWeight { bone: b[3] as usize, weight: w[3] },
-                ];
-            }
-        }
-
         assert!(indices.len() % 3 == 0, "expected a multiple of three indices");
         m.tris.reserve(indices.len() / 3);
         for xs in indices.chunks_exact(3) {
@@ -245,6 +233,17 @@ impl<T: Read + Seek> ModelFile<T> {
 
             if let Some(parent_idx) = parent_idx {
                 m.bones[parent_idx].children.push(idx);
+            }
+        }
+
+        if vert_weights.len() > 0 {
+            assert!(vert_weights.len() == m.verts.len());
+            for (vert, (b, w)) in m.verts.iter_mut().zip(vert_weights.into_iter()) {
+                for i in 0..4 {
+                    let bone_id = b[i];
+                    vert.bone_weights[i].bone = bone_id_map[&(bone_id as u32)];
+                    vert.bone_weights[i].weight = w[i];
+                }
             }
         }
 

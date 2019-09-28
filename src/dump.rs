@@ -1,11 +1,22 @@
 use std::io::{self, Write};
+use std::u16;
 use byteorder::{WriteBytesExt, LE};
 use crate::model::Model;
 
 pub fn dump_model<W: Write>(w: &mut W, m: &Model) -> io::Result<()> {
+    let mut weights = Vec::new();
+    for (i, v) in m.verts.iter().enumerate() {
+        for bw in v.bone_weights.iter() {
+            if bw.weight != 0 {
+                weights.push((i, bw.bone, bw.weight as f32 / u16::MAX as f32));
+            }
+        }
+    }
+
     w.write_u32::<LE>(m.verts.len() as u32)?;
     w.write_u32::<LE>(m.tris.len() as u32)?;
     w.write_u32::<LE>(m.bones.len() as u32)?;
+    w.write_u32::<LE>(weights.len() as u32)?;
 
     for v in &m.verts {
         for &x in &v.pos {
@@ -25,6 +36,12 @@ pub fn dump_model<W: Write>(w: &mut W, m: &Model) -> io::Result<()> {
         for &x in &b.matrix {
             w.write_f32::<LE>(x)?;
         }
+    }
+
+    for (v, b, wt) in weights {
+        w.write_u32::<LE>(v as u32)?;
+        w.write_u32::<LE>(b as u32)?;
+        w.write_f32::<LE>(wt)?;
     }
 
     Ok(())

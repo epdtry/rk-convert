@@ -37,11 +37,15 @@ def transform(m, v):
     z = m[ 2] * v[0] + m[ 6] * v[1] + m[10] * v[2] + m[14]
     return (x, y, z)
 
-num_verts, num_tris, num_bones = read_struct(f, '<III')
+num_verts, num_tris, num_bones, num_weights = read_struct(f, '<IIII')
 
 verts = [read_struct(f, '<3f') for _ in range(num_verts)]
 tris = [read_struct(f, '<3I') for _ in range(num_tris)]
 bones = [read_bone(f) for _ in range(num_bones)]
+weights = [read_struct(f, '<IIf') for _ in range(num_weights)]
+
+print('read %d verts, %d tris, %d bones, %d weights' %
+        (len(verts), len(tris), len(bones), len(weights)))
 
 edges = [x for a,b,c in tris for x in [(a,b),(b,c),(c,a)]]
 
@@ -51,37 +55,52 @@ edges = [x for a,b,c in tris for x in [(a,b),(b,c),(c,a)]]
 objs = list(bpy.context.scene.objects.values())
 for o in objs:
     bpy.context.scene.objects.unlink(o)
+del o
 
 
 # Create mesh object
 
-m = bpy.data.meshes.new('ImportedMesh')
-m.from_pydata(verts, edges, tris)
-ok = m.validate()
+mesh = bpy.data.meshes.new('ImportedMesh')
+mesh.from_pydata(verts, edges, tris)
+ok = mesh.validate()
 assert ok, 'mesh validation failed'
 
-o = bpy.data.objects.new('ImportedObject', m)
+mesh_obj = bpy.data.objects.new('ImportedObject', mesh)
 
-bpy.context.scene.objects.link(o)
+bpy.context.scene.objects.link(mesh_obj)
 
 
-# Create armature object
 
-a = bpy.data.armatures.new('ImportedArmatureData')
-o = bpy.data.objects.new('ImportedArmature', a)
-bpy.context.scene.objects.link(o)
-bpy.context.scene.objects.active = o
-bpy.ops.object.mode_set(mode='EDIT', toggle=False)
+if len(bones) > 0:
+    # Create armature object
 
-edit_bones = a.edit_bones
-bs = [a.edit_bones.new(name) for name, _, _ in bones]
-for b, (_, parent, matrix) in zip(bs, bones):
-    b.head = transform(matrix, (0, 0, 0))
-    b.tail = transform(matrix, (1, 0, 0))
-    if parent is not None:
-        b.parent = bs[parent]
+    arm = bpy.data.armatures.new('ImportedArmatureData')
+    arm_obj = bpy.data.objects.new('ImportedArmature', arm)
+    bpy.context.scene.objects.link(arm_obj)
+    bpy.context.scene.objects.active = arm_obj
+    bpy.ops.object.mode_set(mode='EDIT', toggle=False)
 
-bpy.ops.object.mode_set(mode='OBJECT')
+    edit_bones = arm.edit_bones
+    bs = [arm.edit_bones.new(name) for name, _, _ in bones]
+    for b, (_, parent, matrix) in zip(bs, bones):
+        b.head = transform(matrix, (0, 0, 0))
+        b.tail = transform(matrix, (1, 0, 0))
+        if parent is not None:
+            b.parent = bs[parent]
+
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+
+    # Create vertex groups (one per bone)
+    vgs = []
+    for (name, _, _) in bones:
+        vgs.append(mesh_obj.vertex_groups.new(name))
+
+
+    # Add vertex weights
+    for v, b, w in weights:
+        vgs[b].add((v,), w, type='REPLACE')
+
 
 
 # Sove file
