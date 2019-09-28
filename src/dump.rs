@@ -19,15 +19,13 @@ pub fn dump_model<W: Write>(w: &mut W, m: &Model) -> io::Result<()> {
         }
     }
 
-    /*
     for b in &m.bones {
         write_str(w, &b.name)?;
-        w.write_u32::<LE>(m.parent.map_or(0xffff_ffff, |x| x as u32))?;
+        w.write_u32::<LE>(b.parent.map_or(0xffff_ffff, |x| x as u32))?;
         for &x in &b.matrix {
             w.write_f32::<LE>(x)?;
         }
     }
-    */
 
     Ok(())
 }

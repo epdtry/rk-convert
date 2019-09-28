@@ -14,6 +14,7 @@ fn io_main() -> io::Result<()> {
     let mut m = mf.read_model()?;
     modify::flip_axes(&mut m);
     modify::scale(&mut m, 1./3.);
+    modify::scale_bones(&mut m, 8.);
 
     let mut of = File::create(Path::new(&args[2]))?;
     dump::dump_model(&mut of, &m)?;

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::convert::TryInto;
 use std::io::{self, Read, Seek, SeekFrom, Cursor};
 use std::iter;
@@ -21,6 +22,7 @@ const SEC_VERTEX_WEIGHT: u32 = 17;
 pub struct Model {
     pub verts: Vec<Vertex>,
     pub tris: Vec<[usize; 3]>,
+    pub bones: Vec<Bone>,
     pub parts: Vec<Part>,
     pub mat_name: Option<String>,
 }
@@ -42,6 +44,14 @@ pub struct BoneWeight {
 pub struct Part {
     pub name: String,
     pub tris: Range<usize>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Bone {
+    pub parent: Option<usize>,
+    pub children: Vec<usize>,
+    pub name: String,
+    pub matrix: [f32; 16],
 }
 
 
@@ -162,7 +172,7 @@ impl<T: Read + Seek> ModelFile<T> {
                 let _unk = r.read_one::<[u32; 2]>()?;
                 Ok(offset .. offset + count)
             })?;
-        //let bones = self.read_tagged_section(&headers, SEC_BONE)?;
+        let raw_bones: Vec<RawBone> = self.read_tagged_section(&headers, SEC_BONE)?;
         let vert_weights: Vec<([u8; 4], [u16; 4])> =
             self.read_tagged_section(&headers, SEC_VERTEX_WEIGHT)?;
         let materials: Vec<([String; 6], [f32; 4])> =
@@ -212,6 +222,32 @@ impl<T: Read + Seek> ModelFile<T> {
             }
         }
 
+        m.bones.resize_with(raw_bones.len(), Default::default);
+        let bone_id_map = raw_bones.iter().enumerate()
+            .map(|(i, rb)| (rb.id, i))
+            .collect::<HashMap<_, _>>();
+        assert!(bone_id_map.len() == raw_bones.len(),
+            "duplicate IDs in bone list");
+        for rb in raw_bones {
+            let idx = bone_id_map[&rb.id];
+            let parent_idx: Option<usize>;
+            {
+                let b = &mut m.bones[idx];
+                b.parent = match rb.parent {
+                    0xffffffff => None,
+                    parent_id => Some(bone_id_map.get(&parent_id).cloned()
+                        .unwrap_or_else(|| panic!("bad parent bone ID: {:#x}", parent_id))),
+                };
+                b.matrix = rb.matrix;
+                b.name = rb.name;
+                parent_idx = b.parent;
+            }
+
+            if let Some(parent_idx) = parent_idx {
+                m.bones[parent_idx].children.push(idx);
+            }
+        }
+
         Ok(m)
     }
 }
@@ -234,3 +270,22 @@ impl ReadFrom for SectionHeader {
     }
 }
 
+pub struct RawBone {
+    parent: u32,
+    id: u32,
+    num_children: u32,
+    matrix: [f32; 16],
+    name: String,
+}
+
+impl ReadFrom for RawBone {
+    fn read_from<R: Read + ?Sized>(r: &mut R) -> io::Result<Self> {
+        Ok(RawBone {
+            parent: r.read_one()?,
+            id: r.read_one()?,
+            num_children: r.read_one()?,
+            matrix: r.read_one()?,
+            name: r.read_fixed_str(&mut [0; 64])?,
+        })
+    }
+}
