@@ -27,6 +27,8 @@ read_byteorder! {
     i32, read_i32;
     i64, read_i64;
     i128, read_i128;
+    f32, read_f32;
+    f64, read_f64;
 }
 
 impl ReadFrom for u8 {
@@ -65,6 +67,34 @@ read_array! {
     10 11 12 13 14 15 16 17 18 19
     20 21 22 23 24 25 26 27 28 29
     30 31 32
+}
+
+macro_rules! read_tuple {
+    ($($($A:ident)*;)*) => {
+        $(
+            impl<$($A: ReadFrom,)*> ReadFrom for ($($A,)*) {
+                #[allow(non_snake_case)]
+                fn read_from<R: Read + ?Sized>(r: &mut R) -> io::Result<Self> {
+                    $( let $A: $A = $A::read_from(r)?; )*
+                    Ok(($($A,)*))
+                }
+            }
+        )*
+    };
+}
+
+read_tuple! {
+    ;
+    A;
+    A B;
+    A B C;
+    A B C D;
+    A B C D E;
+    A B C D E F;
+    A B C D E F G;
+    A B C D E F G H;
+    A B C D E F G H I;
+    A B C D E F G H I J;
 }
 
 

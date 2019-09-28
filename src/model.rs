@@ -1,6 +1,8 @@
 use std::io::{self, Read, Seek, SeekFrom, Cursor};
 use std::iter;
+use std::ops::Range;
 use std::str;
+use std::i16;
 use byteorder::{ReadBytesExt, LE};
 use crate::read_from::{ReadFrom, ReadExt};
 
@@ -14,7 +16,30 @@ const SEC_SUBOBJ_NAME: u32 = 16;
 const SEC_VERTEX_WEIGHT: u32 = 17;
 
 
+#[derive(Clone, Debug, Default)]
 pub struct Model {
+    pub verts: Vec<Vertex>,
+    pub tris: Vec<(usize, usize, usize)>,
+    pub parts: Vec<Part>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Vertex {
+    pub pos: (f32, f32, f32),
+    pub uv: (i16, i16),
+    pub bone_weights: [BoneWeight; 4],
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct BoneWeight {
+    pub bone: usize,
+    pub weight: u16,
+}
+
+#[derive(Clone, Debug)]
+pub struct Part {
+    pub name: String,
+    pub tris: Range<usize>,
 }
 
 
@@ -86,14 +111,104 @@ impl<T: Read + Seek> ModelFile<T> {
         }
 
         let full_amount_read = self.file.seek(SeekFrom::Current(0))? as u32 - header.offset;
-        assert!(full_amount_read == amount_read * item_size,
+        assert!(full_amount_read == item_size * header.count,
             "element reader read a variable amount of data");
 
         Ok(v)
     }
+
+    pub fn read_tagged_section<U: ReadFrom>(
+        &mut self,
+        headers: &[SectionHeader],
+        tag: u32,
+    ) -> io::Result<Vec<U>> {
+        if let Some(h) = headers.iter().find(|h| h.tag == tag) {
+            self.read_section(h)
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
+    pub fn read_tagged_section_with<U, F: FnMut(&mut T) -> io::Result<U>>(
+        &mut self,
+        headers: &[SectionHeader],
+        tag: u32,
+        read_one: F,
+    ) -> io::Result<Vec<U>> {
+        if let Some(h) = headers.iter().find(|h| h.tag == tag) {
+            self.read_section_with(h, read_one)
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
+    pub fn read_model(&mut self) -> io::Result<Model> {
+        let mut m = Model::default();
+
+        let mut headers = self.read_headers()?;
+
+        let verts: Vec<([f32; 3], [i16; 2])> = self.read_tagged_section(&headers, SEC_VERTEX)?;
+        let indices: Vec<u16> = self.read_tagged_section(&headers, SEC_FACE)?;
+        let part_names: Vec<String> =
+            self.read_tagged_section_with(&headers, SEC_SUBOBJ_NAME, |r| {
+                r.read_fixed_str(&mut [0; 64])
+            })?;
+        let part_face_ranges: Vec<Range<usize>> =
+            self.read_tagged_section_with(&headers, SEC_SUBOBJ_RANGE, |r| {
+                let count = r.read_one::<u32>()? as usize;
+                let offset = r.read_one::<u32>()? as usize / 3;
+                let _unk = r.read_one::<[u32; 2]>()?;
+                Ok(offset .. offset + count)
+            })?;
+        //let bones = self.read_tagged_section(&headers, SEC_BONE)?;
+        let vert_weights: Vec<([u8; 4], [u16; 4])> =
+            self.read_tagged_section(&headers, SEC_VERTEX_WEIGHT)?;
+        /*
+        let material_names: Vec<String> =
+            self.read_tagged_section_with(&headers, SEC_SUBOBJ_NAME, |r| {
+                let mut strs = 
+                r.read_fixed_str(&mut [0; 64])
+            })?;
+            */
+
+        m.verts.reserve(verts.len());
+        for ([x,y,z], [u,v]) in verts {
+            m.verts.push(Vertex {
+                pos: (x, y, z),
+                uv: (u, v),
+                .. Vertex::default()
+            });
+        }
+
+        if vert_weights.len() > 0 {
+            assert!(vert_weights.len() == m.verts.len());
+            for (vert, (b, w)) in m.verts.iter_mut().zip(vert_weights.into_iter()) {
+                vert.bone_weights = [
+                    BoneWeight { bone: b[0] as usize, weight: w[0] },
+                    BoneWeight { bone: b[1] as usize, weight: w[1] },
+                    BoneWeight { bone: b[2] as usize, weight: w[2] },
+                    BoneWeight { bone: b[3] as usize, weight: w[3] },
+                ];
+            }
+        }
+
+        assert!(indices.len() % 3 == 0, "expected a multiple of three indices");
+        m.tris.reserve(indices.len() / 3);
+        for xs in indices.chunks_exact(3) {
+            m.tris.push((xs[0] as usize, xs[1] as usize, xs[2] as usize));
+        }
+
+        println!("{:?}", part_names);
+
+        m.parts.reserve(part_names.len());
+        assert!(part_names.len() == part_face_ranges.len());
+        for (name, range) in part_names.into_iter().zip(part_face_ranges.into_iter()) {
+            m.parts.push(Part { name, tris: range });
+        }
+
+        Ok(m)
+    }
 }
-
-
 
 pub struct SectionHeader {
     pub tag: u32,
