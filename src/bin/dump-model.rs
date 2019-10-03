@@ -15,9 +15,15 @@ fn io_main() -> io::Result<()> {
     modify::flip_axes(&mut o);
     modify::scale(&mut o, 1./3.);
     modify::scale_bones(&mut o, 8.);
+    modify::prune_verts(&mut o);
+    eprintln!("splitting {} models", o.models.len());
+    modify::split_connected_components(&mut o);
+    eprintln!("got {} models", o.models.len());
+    modify::prune_verts(&mut o);
 
     let mut of = File::create(Path::new(&args[2]))?;
     dump::dump_object(&mut of, &o)?;
+    eprintln!("dumped {} models", o.models.len());
 
     Ok(())
 }
