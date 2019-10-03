@@ -8,9 +8,13 @@ fn io_main() -> io::Result<()> {
     let args = env::args_os().collect::<Vec<_>>();
     assert!(args.len() == 2, "usage: {} <file.rk>", args[0].to_string_lossy());
     let mut mf = ModelFile::new(File::open(&args[1])?);
-    let m = mf.read_model()?;
-    println!("got {} verts, {} tris", m.verts.len(), m.tris.len());
-    println!("material: {:?}", m.mat_name);
+    let o = mf.read_object()?;
+
+    println!("object has {} models", o.models.len());
+    for m in &o.models {
+        println!("  model has {} verts, {} tris", m.verts.len(), m.tris.len());
+    }
+    println!("material: {:?}", o.material);
 
     println!("bone hierarchy:");
     fn print_bone(bs: &[Bone], i: usize, depth: usize) {
@@ -19,9 +23,10 @@ fn io_main() -> io::Result<()> {
             print_bone(bs, j, depth + 1);
         }
     }
-    for i in 0 .. m.bones.len() {
-        if m.bones[i].parent.is_none() {
-            print_bone(&m.bones, i, 1);
+
+    for i in 0 .. o.bones.len() {
+        if o.bones[i].parent.is_none() {
+            print_bone(&o.bones, i, 1);
         }
     }
 

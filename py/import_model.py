@@ -1,4 +1,5 @@
 import bpy
+from collections import namedtuple
 from pprint import pprint
 import struct
 import sys
@@ -37,17 +38,32 @@ def transform(m, v):
     z = m[ 2] * v[0] + m[ 6] * v[1] + m[10] * v[2] + m[14]
     return (x, y, z)
 
-num_verts, num_tris, num_bones, num_weights = read_struct(f, '<IIII')
 
-verts = [read_struct(f, '<3f') for _ in range(num_verts)]
-tris = [read_struct(f, '<3I') for _ in range(num_tris)]
+Model = namedtuple('Model', ('name', 'verts', 'tris', 'weights', 'edges'))
+
+def read_model(f):
+    num_verts, num_tris, num_weights = read_struct(f, '<III')
+
+    name = read_str(f)
+
+    verts = [read_struct(f, '<3f') for _ in range(num_verts)]
+    tris = [read_struct(f, '<3I') for _ in range(num_tris)]
+    weights = [read_struct(f, '<IIf') for _ in range(num_weights)]
+
+    print('read %d verts, %d tris, %d weights' %
+            (len(verts), len(tris), len(weights)))
+
+    edges = [x for a,b,c in tris for x in [(a,b),(b,c),(c,a)]]
+
+    return Model(name, verts, tris, weights, edges)
+
+
+
+num_models, num_bones = read_struct(f, '<II')
+
+models = [read_model(f) for _ in range(num_models)]
 bones = [read_bone(f) for _ in range(num_bones)]
-weights = [read_struct(f, '<IIf') for _ in range(num_weights)]
-
-print('read %d verts, %d tris, %d bones, %d weights' %
-        (len(verts), len(tris), len(bones), len(weights)))
-
-edges = [x for a,b,c in tris for x in [(a,b),(b,c),(c,a)]]
+print('read %d models, %d bones' % (len(models), len(bones)))
 
 
 # Remove initial objects
@@ -58,24 +74,10 @@ for o in objs:
 del o
 
 
-# Create mesh object
-
-mesh = bpy.data.meshes.new('ImportedMesh')
-mesh.from_pydata(verts, edges, tris)
-ok = mesh.validate()
-assert ok, 'mesh validation failed'
-
-mesh_obj = bpy.data.objects.new('ImportedObject', mesh)
-
-bpy.context.scene.objects.link(mesh_obj)
-
-
-
+# Create armature object
 if len(bones) > 0:
-    # Create armature object
-
-    arm = bpy.data.armatures.new('ImportedArmatureData')
-    arm_obj = bpy.data.objects.new('ImportedArmature', arm)
+    arm = bpy.data.armatures.new('ArmatureData')
+    arm_obj = bpy.data.objects.new('Armature', arm)
     bpy.context.scene.objects.link(arm_obj)
     bpy.context.scene.objects.active = arm_obj
     bpy.ops.object.mode_set(mode='EDIT', toggle=False)
@@ -91,16 +93,28 @@ if len(bones) > 0:
     bpy.ops.object.mode_set(mode='OBJECT')
 
 
-    # Create vertex groups (one per bone)
-    vgs = []
-    for (name, _, _) in bones:
-        vgs.append(mesh_obj.vertex_groups.new(name))
+# Create mesh objects
 
+for m in models:
 
-    # Add vertex weights
-    for v, b, w in weights:
-        vgs[b].add((v,), w, type='REPLACE')
+    mesh = bpy.data.meshes.new('MeshData-%s' % m.name)
+    mesh.from_pydata(m.verts, m.edges, m.tris)
+    ok = mesh.validate()
+    assert ok, 'mesh validation failed'
 
+    mesh_obj = bpy.data.objects.new('Mesh-%s' % m.name, mesh)
+
+    bpy.context.scene.objects.link(mesh_obj)
+
+    if len(bones) > 0:
+        # Create vertex groups (one per bone)
+        vgs = []
+        for (name, _, _) in bones:
+            vgs.append(mesh_obj.vertex_groups.new(name))
+
+        # Add vertex weights
+        for v, b, w in m.weights:
+            vgs[b].add((v,), w, type='REPLACE')
 
 
 # Sove file

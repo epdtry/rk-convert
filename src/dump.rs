@@ -1,7 +1,28 @@
 use std::io::{self, Write};
 use std::u16;
 use byteorder::{WriteBytesExt, LE};
-use crate::model::Model;
+use crate::model::{Model, Object};
+
+pub fn dump_object<W: Write>(w: &mut W, o: &Object) -> io::Result<()> {
+    w.write_u32::<LE>(o.models.len() as u32)?;
+    w.write_u32::<LE>(o.bones.len() as u32)?;
+
+    for m in &o.models {
+        dump_model(w, m)?;
+    }
+
+    for b in &o.bones {
+        write_str(w, &b.name)?;
+        w.write_u32::<LE>(b.parent.map_or(0xffff_ffff, |x| x as u32))?;
+        for &x in &b.matrix {
+            w.write_f32::<LE>(x)?;
+        }
+    }
+
+    // TODO: o.material
+
+    Ok(())
+}
 
 pub fn dump_model<W: Write>(w: &mut W, m: &Model) -> io::Result<()> {
     let mut weights = Vec::new();
@@ -15,8 +36,9 @@ pub fn dump_model<W: Write>(w: &mut W, m: &Model) -> io::Result<()> {
 
     w.write_u32::<LE>(m.verts.len() as u32)?;
     w.write_u32::<LE>(m.tris.len() as u32)?;
-    w.write_u32::<LE>(m.bones.len() as u32)?;
     w.write_u32::<LE>(weights.len() as u32)?;
+
+    write_str(w, &m.name)?;
 
     for v in &m.verts {
         for &x in &v.pos {
@@ -27,14 +49,6 @@ pub fn dump_model<W: Write>(w: &mut W, m: &Model) -> io::Result<()> {
     for t in &m.tris {
         for &i in t {
             w.write_u32::<LE>(i as u32)?;
-        }
-    }
-
-    for b in &m.bones {
-        write_str(w, &b.name)?;
-        w.write_u32::<LE>(b.parent.map_or(0xffff_ffff, |x| x as u32))?;
-        for &x in &b.matrix {
-            w.write_f32::<LE>(x)?;
         }
     }
 

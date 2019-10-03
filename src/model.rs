@@ -20,11 +20,9 @@ const SEC_VERTEX_WEIGHT: u32 = 17;
 
 #[derive(Clone, Debug, Default)]
 pub struct Model {
+    pub name: String,
     pub verts: Vec<Vertex>,
     pub tris: Vec<[usize; 3]>,
-    pub bones: Vec<Bone>,
-    pub parts: Vec<Part>,
-    pub mat_name: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -40,18 +38,19 @@ pub struct BoneWeight {
     pub weight: u16,
 }
 
-#[derive(Clone, Debug)]
-pub struct Part {
-    pub name: String,
-    pub tris: Range<usize>,
-}
-
 #[derive(Clone, Debug, Default)]
 pub struct Bone {
     pub parent: Option<usize>,
     pub children: Vec<usize>,
     pub name: String,
     pub matrix: [f32; 16],
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Object {
+    pub models: Vec<Model>,
+    pub bones: Vec<Bone>,
+    pub material: Option<String>,
 }
 
 
@@ -154,8 +153,9 @@ impl<T: Read + Seek> ModelFile<T> {
         }
     }
 
-    pub fn read_model(&mut self) -> io::Result<Model> {
+    pub fn read_object(&mut self) -> io::Result<Object> {
         let mut m = Model::default();
+        let mut o = Object::default();
 
         let mut headers = self.read_headers()?;
 
@@ -184,6 +184,8 @@ impl<T: Read + Seek> ModelFile<T> {
                 Ok((strs.clone(), vals))
             })?;
 
+        // Parse basic model elements
+
         m.verts.reserve(verts.len());
         for (pos, uv) in verts {
             m.verts.push(Vertex { pos, uv, .. Vertex::default() });
@@ -195,22 +197,9 @@ impl<T: Read + Seek> ModelFile<T> {
             m.tris.push([xs[0] as usize, xs[1] as usize, xs[2] as usize]);
         }
 
-        m.parts.reserve(part_names.len());
-        assert!(part_names.len() == part_face_ranges.len());
-        for (name, range) in part_names.into_iter().zip(part_face_ranges.into_iter()) {
-            m.parts.push(Part { name, tris: range });
-        }
+        // Parse bones and bone weights
 
-        if materials.len() != 0 {
-            assert!(materials.len() == 1, "expected only one set of materials");
-            m.mat_name = materials[0].0.iter().find(|s| s.len() > 0).cloned();
-            if let Some(ref name) = m.mat_name {
-                assert!(materials[0].0.iter().all(|s| s.len() == 0 || s == name),
-                    "expected all material names to match, but got {:?}", materials[0].0);
-            }
-        }
-
-        m.bones.resize_with(raw_bones.len(), Default::default);
+        o.bones.resize_with(raw_bones.len(), Default::default);
         let bone_id_map = raw_bones.iter().enumerate()
             .map(|(i, rb)| (rb.id, i))
             .collect::<HashMap<_, _>>();
@@ -220,7 +209,7 @@ impl<T: Read + Seek> ModelFile<T> {
             let idx = bone_id_map[&rb.id];
             let parent_idx: Option<usize>;
             {
-                let b = &mut m.bones[idx];
+                let b = &mut o.bones[idx];
                 b.parent = match rb.parent {
                     0xffffffff => None,
                     parent_id => Some(bone_id_map.get(&parent_id).cloned()
@@ -232,7 +221,7 @@ impl<T: Read + Seek> ModelFile<T> {
             }
 
             if let Some(parent_idx) = parent_idx {
-                m.bones[parent_idx].children.push(idx);
+                o.bones[parent_idx].children.push(idx);
             }
         }
 
@@ -247,7 +236,30 @@ impl<T: Read + Seek> ModelFile<T> {
             }
         }
 
-        Ok(m)
+        // Parse subobject info and build separate Models
+
+        assert!(part_names.len() == part_face_ranges.len());
+        for (part_name, face_range) in part_names.into_iter().zip(part_face_ranges.into_iter()) {
+            let m2 = Model {
+                name: part_name,
+                verts: m.verts.clone(),
+                tris: m.tris[face_range].to_owned(),
+            };
+            o.models.push(m2);
+        }
+
+        // Parse other Object-level info
+
+        if materials.len() != 0 {
+            assert!(materials.len() == 1, "expected only one set of materials");
+            o.material = materials[0].0.iter().find(|s| s.len() > 0).cloned();
+            if let Some(ref name) = o.material {
+                assert!(materials[0].0.iter().all(|s| s.len() == 0 || s == name),
+                    "expected all material names to match, but got {:?}", materials[0].0);
+            }
+        }
+
+        Ok(o)
     }
 }
 
