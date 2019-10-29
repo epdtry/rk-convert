@@ -12,22 +12,29 @@ fn io_main() -> io::Result<()> {
     let mut o = mf.read_object()?;
     modify::flip_axes(&mut o);
     modify::scale(&mut o, 1./3.);
+    modify::prune_verts(&mut o);
+    modify::split_connected_components(&mut o);
+    modify::prune_verts(&mut o);
 
     let stem = Path::new(&args[1]).file_stem().unwrap().to_str().unwrap();
-    println!("solid {}", stem);
     for m in &o.models {
+        let name = m.name.replace(|c: char| !c.is_ascii_alphanumeric(), "_");
+        let file_name = format!("{}-{}.stl", stem, name);
+        eprintln!("generating {}", file_name);
+        let mut f = File::create(file_name)?;
+        writeln!(f, "solid {}", name).unwrap();
         for idxs in &m.tris {
-            println!("facet normal {:e} {:e} {:e}", 0.0, 0.0, 0.0);
-            println!(" outer loop");
+            writeln!(f, "facet normal {:e} {:e} {:e}", 0.0, 0.0, 0.0)?;
+            writeln!(f, " outer loop")?;
             for &i in idxs {
                 let [x,y,z] = m.verts[i].pos;
-                println!("  vertex {:e} {:e} {:e}", x, y, z);
+                writeln!(f, "  vertex {:e} {:e} {:e}", x, y, z)?;
             }
-            println!(" endloop");
-            println!("endfacet");
+            writeln!(f, " endloop")?;
+            writeln!(f, "endfacet")?;
         }
+        writeln!(f, "endsolid {}", name)?;
     }
-    println!("endsolid {}", stem);
 
     Ok(())
 }
