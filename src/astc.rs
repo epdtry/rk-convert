@@ -231,7 +231,8 @@ impl IntegerEncoding {
 
     pub fn unquantize_255(self, n: u8) -> u8 {
         if self.bits == 0 || (!self.trit && !self.quint) {
-            return ((n as u32 * 63 + self.max_value() / 2) / self.max_value()) as u8;
+            let max = self.max_value() - 1;
+            return ((n as u32 * 255 + max / 2) / max) as u8;
         }
 
         let tq = n >> self.bits;
@@ -256,13 +257,14 @@ impl IntegerEncoding {
         };
         let d = tq as u16;
 
-        let u1 = (d * c + b) ^ a;
+        let u1 = ((d * c + b) ^ a) & 0x1ff;
         ((a & 0x80) | (u1 >> 2)) as u8
     }
 
     pub fn unquantize_63(self, n: u8) -> u8 {
         if self.bits == 0 || (!self.trit && !self.quint) {
-            return ((n as u32 * 63 + self.max_value() / 2) / self.max_value()) as u8;
+            let max = self.max_value() - 1;
+            return ((n as u32 * 63 + max / 2) / max) as u8;
         }
 
         let tq = n >> self.bits;
@@ -281,7 +283,7 @@ impl IntegerEncoding {
         };
         let d = tq as u16;
 
-        let u1 = (d * c + b) ^ a;
+        let u1 = ((d * c + b) ^ a) & 0x7f;
         ((a & 0x20) | (u1 >> 2)) as u8
     }
 
@@ -297,6 +299,7 @@ pub fn decode(w: u32, h: u32, words: Vec<u128>) -> Image {
     let mut cems_seen = HashMap::new();
     let mut ranges_seen = HashSet::new();
     let mut void_hdrs_seen = HashSet::new();
+    let mut endpoint_encs_seen = HashSet::new();
 
     let mut image = Image::new(w, h);
     let (bw, bh) = (w as usize / 8, h as usize / 8);
@@ -449,9 +452,14 @@ pub fn decode(w: u32, h: u32, words: Vec<u128>) -> Image {
         } else {
             for (i, &v) in weight_vs.iter().enumerate() {
                 let a = bm.range_encoding().unquantize_64(v);
-                weights[i] = [v; 4];
+                weights[i] = [a; 4];
             }
         }
+
+//        eprintln!("wt enc = {:?}, raw = {:?}, wts = {:?}",
+//            (bm.range_encoding().quint, bm.range_encoding().trit, bm.range_encoding().bits),
+//            weight_vs,
+//            weights);
 
         let mut pixel_weights = [[0; 4]; 8 * 8];
         for y in 0 .. 8 {
@@ -472,15 +480,16 @@ pub fn decode(w: u32, h: u32, words: Vec<u128>) -> Image {
             for x in 0 .. 8 {
                 let ws = pixel_weights[y * 8 + x];
                 let (e0, e1) = endpoints[0];
-                //*image.pixel_mut(bx * 8 + x, by * 8 + y) = interpolate_color(ws, e0, e1);
-                *image.pixel_mut(bx * 8 + x, by * 8 + y) = interpolate_color(
-                    [x as u8 * 8; 4], e0, e1);
+                //eprintln!("{},{}: {:?}", x, y, (ws, e0, e1));
+                *image.pixel_mut(bx * 8 + x, by * 8 + y) = interpolate_color(ws, e0, e1);
+                //*image.pixel_mut(bx * 8 + x, by * 8 + y) = interpolate_color(
+                //    [x as u8 * 8; 4], e0, e1);
             }
         }
-        eprintln!("ep range = {:?}; vs = {:?}, endpoints = {:?}",
-            (endpoint_encoding.quint as u8, endpoint_encoding.trit as u8, endpoint_encoding.bits),
-            endpoint_vs,
-            endpoints[0]);
+        //eprintln!("ep range = {:?}; vs = {:?}, endpoints = {:?}",
+        //    (endpoint_encoding.quint as u8, endpoint_encoding.trit as u8, endpoint_encoding.bits),
+        //    endpoint_vs,
+        //    endpoints[0]);
 
         if endpoint_encoding.quint {
             *image.pixel_mut(bx * 8, by * 8) = [255, 0, 255, 255];
@@ -493,6 +502,14 @@ pub fn decode(w: u32, h: u32, words: Vec<u128>) -> Image {
         //let cem = cems[0];
         //let num_values = 2 * (cem >> 2) as usize;
 
+        endpoint_encs_seen.insert(endpoint_encoding);
+    }
+
+    for test_enc in endpoint_encs_seen {
+        dbg!(test_enc);
+        eprintln!("unquant test: {:?}", (0 .. test_enc.max_value())
+                  .map(|n| test_enc.unquantize_255(n as u8))
+                  .collect::<Vec<_>>());
     }
 
     /*
@@ -638,6 +655,11 @@ static VALID_ENDPOINT_ENCODINGS: [IntegerEncoding; 11] = [
 fn find_endpoint_encoding(values: usize, bits: usize) -> IntegerEncoding {
     for enc in VALID_ENDPOINT_ENCODINGS.iter().rev() {
         if enc.bits_used(values) <= bits {
+            assert!(VALID_ENDPOINT_ENCODINGS.iter().all(|other| {
+                other == enc ||
+                other.bits_used(values) > bits ||
+                other.bits_used(values) < enc.bits_used(values)
+            }));
             return *enc;
         }
     }
