@@ -102,14 +102,16 @@ for m in models:
     mesh.from_pydata(m.verts, m.edges, m.tris)
     ok = mesh.validate()
     assert ok, 'mesh validation failed'
+    mesh.calc_loop_triangles()
 
-    #uvs = mesh.tessface_uv_textures.new()
-    #for i, (a,b,c) in enumerate(m.tris):
-    #    uv = uvs.data[i]
-    #    uv.uv1 = m.uvs[a]
-    #    uv.uv2 = m.uvs[b]
-    #    uv.uv3 = m.uvs[c]
-    #    #uv.image = img
+    uvs = mesh.uv_layers.new()
+    print(len(uvs.data), len(m.uvs), len(m.tris), len(m.verts),
+            len(mesh.loop_triangles), len(mesh.loops), len(mesh.vertices))
+    for loop_tri in mesh.loop_triangles:
+        print(loop_tri.vertices)
+        for (loop_index, vert_index) in zip(loop_tri.loops, loop_tri.vertices):
+            uvs.data[loop_index].uv = m.uvs[vert_index]
+        # TODO: assign texture image
 
     mesh_obj = bpy.data.objects.new('Mesh-%s' % m.name, mesh)
 
