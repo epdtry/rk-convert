@@ -39,7 +39,7 @@ def transform(m, v):
     return (x, y, z)
 
 
-Model = namedtuple('Model', ('name', 'verts', 'tris', 'weights', 'edges'))
+Model = namedtuple('Model', ('name', 'verts', 'uvs', 'tris', 'weights', 'edges'))
 
 def read_model(f):
     num_verts, num_tris, num_weights = read_struct(f, '<III')
@@ -47,6 +47,7 @@ def read_model(f):
     name = read_str(f)
 
     verts = [read_struct(f, '<3f') for _ in range(num_verts)]
+    uvs = [read_struct(f, '<2f') for _ in range(num_verts)]
     tris = [read_struct(f, '<3I') for _ in range(num_tris)]
     weights = [read_struct(f, '<IIf') for _ in range(num_weights)]
 
@@ -55,7 +56,7 @@ def read_model(f):
 
     edges = [x for a,b,c in tris for x in [(a,b),(b,c),(c,a)]]
 
-    return Model(name, verts, tris, weights, edges)
+    return Model(name, verts, uvs, tris, weights, edges)
 
 
 
@@ -101,6 +102,14 @@ for m in models:
     mesh.from_pydata(m.verts, m.edges, m.tris)
     ok = mesh.validate()
     assert ok, 'mesh validation failed'
+
+    #uvs = mesh.tessface_uv_textures.new()
+    #for i, (a,b,c) in enumerate(m.tris):
+    #    uv = uvs.data[i]
+    #    uv.uv1 = m.uvs[a]
+    #    uv.uv2 = m.uvs[b]
+    #    uv.uv3 = m.uvs[c]
+    #    #uv.image = img
 
     mesh_obj = bpy.data.objects.new('Mesh-%s' % m.name, mesh)
 

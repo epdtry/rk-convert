@@ -28,7 +28,7 @@ pub struct Model {
 #[derive(Clone, Debug, Default)]
 pub struct Vertex {
     pub pos: [f32; 3],
-    pub uv: [i16; 2],
+    pub uv: [f32; 2],
     pub bone_weights: [BoneWeight; 4],
 }
 
@@ -188,6 +188,7 @@ impl<T: Read + Seek> ModelFile<T> {
 
         m.verts.reserve(verts.len());
         for (pos, uv) in verts {
+            let uv = [uv[0] as f32 / 32767.0, uv[1] as f32 / -32767.0];
             m.verts.push(Vertex { pos, uv, .. Vertex::default() });
         }
 

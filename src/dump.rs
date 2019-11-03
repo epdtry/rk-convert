@@ -46,6 +46,12 @@ pub fn dump_model<W: Write>(w: &mut W, m: &Model) -> io::Result<()> {
         }
     }
 
+    for v in &m.verts {
+        for &x in &v.uv {
+            w.write_f32::<LE>(x)?;
+        }
+    }
+
     for t in &m.tris {
         for &i in t {
             w.write_u32::<LE>(i as u32)?;
