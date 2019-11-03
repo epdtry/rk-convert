@@ -68,9 +68,9 @@ print('read %d models, %d bones' % (len(models), len(bones)))
 
 # Remove initial objects
 
-objs = list(bpy.context.scene.objects.values())
+objs = list(bpy.context.scene.collection.children.values())
 for o in objs:
-    bpy.context.scene.objects.unlink(o)
+    bpy.context.scene.collection.children.unlink(o)
 del o
 
 
@@ -78,8 +78,8 @@ del o
 if len(bones) > 0:
     arm = bpy.data.armatures.new('ArmatureData')
     arm_obj = bpy.data.objects.new('Armature', arm)
-    bpy.context.scene.objects.link(arm_obj)
-    bpy.context.scene.objects.active = arm_obj
+    bpy.context.scene.collection.objects.link(arm_obj)
+    bpy.context.view_layer.objects.active = arm_obj
     bpy.ops.object.mode_set(mode='EDIT', toggle=False)
 
     edit_bones = arm.edit_bones
@@ -104,17 +104,19 @@ for m in models:
 
     mesh_obj = bpy.data.objects.new('Mesh-%s' % m.name, mesh)
 
-    bpy.context.scene.objects.link(mesh_obj)
+    bpy.context.scene.collection.objects.link(mesh_obj)
 
     if len(bones) > 0:
         # Create vertex groups (one per bone)
         vgs = []
         for (name, _, _) in bones:
-            vgs.append(mesh_obj.vertex_groups.new(name))
+            vgs.append(mesh_obj.vertex_groups.new(name=name))
 
         # Add vertex weights
         for v, b, w in m.weights:
             vgs[b].add((v,), w, type='REPLACE')
+
+        # TODO: add armature modifier
 
 
 # Sove file
