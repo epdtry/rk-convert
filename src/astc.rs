@@ -229,8 +229,65 @@ impl IntegerEncoding {
         out
     }
 
-    pub fn unquantize(self, n: u8, max: u8) -> u8 {
-        ((n as u32 * max as u32 + self.max_value() / 2) / self.max_value()) as u8
+    pub fn unquantize_255(self, n: u8) -> u8 {
+        if self.bits == 0 || (!self.trit && !self.quint) {
+            return ((n as u32 * 63 + self.max_value() / 2) / self.max_value()) as u8;
+        }
+
+        let tq = n >> self.bits;
+        let bs = n.bits(0, self.bits as usize);
+
+        let x = (bs >> 1) as u16;
+
+        let a = if n.bit(0) { 0x1ff } else { 0 };
+        let (b, c) = match (self.quint as u8, self.trit as u8, self.bits) {
+            (0, 1, 1) => (0, 204),
+            (1, 0, 1) => (0, 113),
+            (0, 1, 2) => ((x << 8) | (x << 4) | (x << 2) | (x << 1), 93),
+            (1, 0, 2) => ((x << 8) | (x << 3) | (x << 2), 54),
+            (0, 1, 3) => ((x << 7) | (x << 2) | x, 44),
+            (1, 0, 3) => ((x << 7) | (x << 1) | (x >> 1), 26),
+            (0, 1, 4) => ((x << 6) | x, 22),
+            (1, 0, 4) => ((x << 6) | (x >> 1), 13),
+            (0, 1, 5) => ((x << 5) | (x >> 2), 11),
+            (1, 0, 5) => ((x << 5) | (x >> 3), 6),
+            (0, 1, 6) => ((x << 4) | (x >> 4), 5),
+            _ => unreachable!(),
+        };
+        let d = tq as u16;
+
+        let u1 = (d * c + b) ^ a;
+        ((a & 0x80) | (u1 >> 2)) as u8
+    }
+
+    pub fn unquantize_63(self, n: u8) -> u8 {
+        if self.bits == 0 || (!self.trit && !self.quint) {
+            return ((n as u32 * 63 + self.max_value() / 2) / self.max_value()) as u8;
+        }
+
+        let tq = n >> self.bits;
+        let bs = n.bits(0, self.bits as usize);
+
+        let x = (bs >> 1) as u16;
+
+        let a = if n.bit(0) { 0x1ff } else { 0 };
+        let (b, c) = match (self.quint as u8, self.trit as u8, self.bits) {
+            (0, 1, 1) => (0, 50),
+            (1, 0, 1) => (0, 28),
+            (0, 1, 2) => ((x << 6) | (x << 2) | x, 23),
+            (1, 0, 2) => ((x << 6) | (x << 1), 13),
+            (0, 1, 3) => ((x << 5) | x, 11),
+            _ => unreachable!(),
+        };
+        let d = tq as u16;
+
+        let u1 = (d * c + b) ^ a;
+        ((a & 0x20) | (u1 >> 2)) as u8
+    }
+
+    pub fn unquantize_64(self, n: u8) -> u8 {
+        let u = self.unquantize_63(n);
+        if u > 32 { u + 1 } else { u }
     }
 }
 
@@ -246,6 +303,7 @@ pub fn decode(w: u32, h: u32, words: Vec<u128>) -> Image {
     for (i, w) in words.into_iter().enumerate() {
         let (bx, by) = (i % bw, i / bw);
 
+
         // Decode block mode
 
         let bm = decode_block_mode(w.bits(0, 11) as u16);
@@ -256,12 +314,14 @@ pub fn decode(w: u32, h: u32, words: Vec<u128>) -> Image {
                 // Void-extent blocks are much simpler and can be decoded immediately.
                 let hdr = w.bit(9);
                 void_hdrs_seen.insert(hdr);
-                let color = decode_void_extent_color(w.bits(64, 64) as u64, hdr);
+                let mut color = decode_void_extent_color(w.bits(64, 64) as u64, hdr);
+                color[3] = 0x80;
                 write_void_extent(&mut image, (bx, by), color);
                 continue;
             },
         };
         ranges_seen.insert(bm.range);
+
 
         // Extract raw subfields: partition count + index, weight bitstream, CEM bits, CCS mode,
         // color endpoint bits.
@@ -295,18 +355,20 @@ pub fn decode(w: u32, h: u32, words: Vec<u128>) -> Image {
         //
         // This may take some bits from `top` as a side effect.
         let cem_bits = {
-            let cem_high = if parts == 1 {
-                0
-            } else {
-                let size = 3 * parts as usize - 4;
-                let shift = 3 * (4 - parts);
-                top -= size;
-                w.bits(top, size) as u16 >> shift
-            };
             let cem_low = if parts == 1 {
                 (w.bits(13, 4) as u16) << 2
             } else {
                 w.bits(23, 6) as u16
+            };
+            let need_bits = if cem_low.bits(0, 2) == 0b00 {
+                6
+            } else {
+                2 + 3 * parts as usize
+            };
+            let cem_high = {
+                let size = need_bits - 6;
+                top -= size;
+                w.bits(top, size) as u16
             };
             (cem_high << 6) | cem_low
         };
@@ -323,6 +385,25 @@ pub fn decode(w: u32, h: u32, words: Vec<u128>) -> Image {
         let num_endpoint_bits = top - bottom;
         let endpoint_bits = w.bits(bottom, num_endpoint_bits);
 
+        // Sanity check endpoint_bits against the computation in section 18.22 "Data Size
+        // Determination"
+        {
+            let config_bits = (if parts == 1 {
+                17
+            } else {
+                if cem_bits.bits(0, 2) == 0b00 {
+                    29
+                } else {
+                    25 + 3 * parts as usize
+                }
+            }) + (if bm.dual_plane { 2 } else { 0 });
+            let num_weights = (bm.width * bm.height * (if bm.dual_plane { 2 } else { 1 })) as usize;
+            let weight_bits = bm.range_encoding().bits_used(num_weights);
+            //dbg!((parts, cem_bits.bits(0, 2), bm.dual_plane));
+            assert_eq!(num_endpoint_bits, 128 - config_bits - weight_bits);
+        }
+
+
         // Decode CEMs and color endpoints
 
         let cems = decode_partition_cems(parts, cem_bits);
@@ -333,19 +414,79 @@ pub fn decode(w: u32, h: u32, words: Vec<u128>) -> Image {
         // For each partition, add up the number of raw values used to compute the endpoint pair
         // for that partition.
         let num_endpoint_values = (0 .. parts as usize)
-            .map(|i| 2 * ((cems[i] >> 2) + 1) as usize)
+            .map(|i| num_values_for_cem(cems[i]))
             .sum();
         let endpoint_encoding = find_endpoint_encoding(num_endpoint_values, num_endpoint_bits);
+        assert!(endpoint_encoding.bits_used(num_endpoint_values) <= num_endpoint_bits);
         let endpoint_vs =
             endpoint_encoding.decode_sequence(num_endpoint_values, endpoint_bits)
                 .into_iter()
-                .map(|x| endpoint_encoding.unquantize(x, 255))
+                .map(|x| endpoint_encoding.unquantize_255(x))
                 .collect::<Vec<_>>();
 
-        let (e0, e1) = decode_endpoint(cems[0], &endpoint_vs);
-        write_void_extent(&mut image, (bx, by), e1);
+        let mut endpoints = [([0; 4], [0; 4]); 4];
+        let mut vs_pos = 0;
+        for i in 0 .. parts as usize {
+            endpoints[i] = decode_endpoint(cems[i], &endpoint_vs[vs_pos..]);
+            vs_pos += num_values_for_cem(cems[i]);
+        }
 
-        //if parts > 1 { continue; } // TODO
+
+        // Decode weights.  We store the weights (in range 0-32 inclusive) independently for each
+        // channel.
+
+        let mut weights = vec![[0; 4]; num_weights];
+        let weight_vs = bm.range_encoding().decode_sequence(num_weights, s);
+
+        // CCS mode is set only for dual-plane blocks.
+        if let Some(ccs_mode) = ccs_mode {
+            for (i, vs) in weight_vs.chunks_exact(2).enumerate() {
+                let a = bm.range_encoding().unquantize_64(vs[0]);
+                let b = bm.range_encoding().unquantize_64(vs[1]);
+                weights[i] = [a; 4];
+                weights[i][ccs_mode as usize] = b;
+            }
+        } else {
+            for (i, &v) in weight_vs.iter().enumerate() {
+                let a = bm.range_encoding().unquantize_64(v);
+                weights[i] = [v; 4];
+            }
+        }
+
+        let mut pixel_weights = [[0; 4]; 8 * 8];
+        for y in 0 .. 8 {
+            for x in 0 .. 8 {
+                pixel_weights[y * 8 + x] = interpolate_weight(
+                    &weights, bm.width as u32, bm.height as u32, x as u32, y as u32);
+            }
+        }
+
+
+        // Compute final colors
+
+        if parts > 1 { continue; } // TODO
+        if cems[0] != 6 { continue; }
+
+        let pixels = [[0; 4]; 8 * 8];
+        for y in 0 .. 8 {
+            for x in 0 .. 8 {
+                let ws = pixel_weights[y * 8 + x];
+                let (e0, e1) = endpoints[0];
+                //*image.pixel_mut(bx * 8 + x, by * 8 + y) = interpolate_color(ws, e0, e1);
+                *image.pixel_mut(bx * 8 + x, by * 8 + y) = interpolate_color(
+                    [x as u8 * 8; 4], e0, e1);
+            }
+        }
+        eprintln!("ep range = {:?}; vs = {:?}, endpoints = {:?}",
+            (endpoint_encoding.quint as u8, endpoint_encoding.trit as u8, endpoint_encoding.bits),
+            endpoint_vs,
+            endpoints[0]);
+
+        if endpoint_encoding.quint {
+            *image.pixel_mut(bx * 8, by * 8) = [255, 0, 255, 255];
+        } else if endpoint_encoding.trit {
+            *image.pixel_mut(bx * 8, by * 8) = [255, 255, 0, 255];
+        }
 
         //let endpoint_vs = decode_integer_sequence(
 
@@ -454,6 +595,10 @@ fn decode_block_mode(w: u16) -> BlockMode {
 
 const BAD_COLOR: [u8; 4] = [0xff, 0, 0xff, 0xff];
 
+fn num_values_for_cem(cem: u8) -> usize {
+    2 * ((cem >> 2) + 1) as usize
+}
+
 fn decode_void_extent_color(w: u64, hdr: bool) -> [u8; 4] {
     if hdr {
         return BAD_COLOR;
@@ -534,6 +679,45 @@ fn blue_contract(r: u8, g: u8, b: u8, a: u8) -> [u8; 4] {
         b,
         a,
     ]
+}
+
+fn interpolate_weight(ws: &[[u8; 4]], width: u32, height: u32, x: u32, y: u32) -> [u8; 4] {
+    let xx = x * (width - 1) / 7;
+    let yy = y * (height - 1) / 7;
+    let xfrac = x * (width - 1) % 7;
+    let yfrac = y * (height - 1) % 7;
+
+    let xx1 = if xx == width - 1 { xx } else { xx + 1 };
+    let yy1 = if yy == height - 1 { yy } else { yy + 1 };
+
+    let w00 = ws[(yy * width + xx) as usize];
+    let w10 = ws[(yy * width + xx1) as usize];
+    let w01 = ws[(yy1 * width + xx) as usize];
+    let w11 = ws[(yy1 * width + xx1) as usize];
+
+    let mut out = [0; 4];
+    for i in 0..4 {
+        out[i] = ((
+            w00[i] as u32 * (7 - xfrac) * (7 - yfrac) +
+            w10[i] as u32 * xfrac * (7 - yfrac) +
+            w01[i] as u32 * (7 - xfrac) * yfrac +
+            w11[i] as u32 * xfrac * yfrac +
+            49 / 2
+        ) / 49) as u8;
+    }
+    out
+}
+
+fn interpolate_color(ws: [u8; 4], e0: [u8; 4], e1: [u8; 4]) -> [u8; 4] {
+    let mut out = [0; 4];
+    for i in 0..4 {
+        out[i] = ((
+            e0[i] as u16 * (64 - ws[i] as u16) +
+            e1[i] as u16 * ws[i] as u16 +
+            64 / 2
+        ) / 64) as u8;
+    }
+    out
 }
 
 
