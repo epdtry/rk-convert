@@ -1,6 +1,7 @@
 import bpy
 from collections import namedtuple
 from pprint import pprint
+import os
 import struct
 import sys
 
@@ -94,6 +95,24 @@ if len(bones) > 0:
     bpy.ops.object.mode_set(mode='OBJECT')
 
 
+# Create material object
+mat = bpy.data.materials.new(name='Material')
+mat.use_nodes = True
+ntree = mat.node_tree
+
+for n in list(ntree.nodes):
+    ntree.nodes.remove(n)
+
+n_output = ntree.nodes.new('ShaderNodeOutputMaterial')
+n_emission = ntree.nodes.new('ShaderNodeEmission')
+n_image = ntree.nodes.new('ShaderNodeTexImage')
+
+ntree.links.new(n_emission.inputs['Color'], n_image.outputs['Color'])
+ntree.links.new(n_output.inputs['Surface'], n_emission.outputs['Emission'])
+
+n_image.image = bpy.data.images.load(os.path.abspath('pony.tga'))
+
+
 # Create mesh objects
 
 for m in models:
@@ -105,13 +124,11 @@ for m in models:
     mesh.calc_loop_triangles()
 
     uvs = mesh.uv_layers.new()
-    print(len(uvs.data), len(m.uvs), len(m.tris), len(m.verts),
-            len(mesh.loop_triangles), len(mesh.loops), len(mesh.vertices))
     for loop_tri in mesh.loop_triangles:
-        print(loop_tri.vertices)
         for (loop_index, vert_index) in zip(loop_tri.loops, loop_tri.vertices):
             uvs.data[loop_index].uv = m.uvs[vert_index]
-        # TODO: assign texture image
+
+    mesh.materials.append(mat)
 
     mesh_obj = bpy.data.objects.new('Mesh-%s' % m.name, mesh)
 
@@ -132,4 +149,4 @@ for m in models:
 
 # Sove file
 
-bpy.ops.wm.save_as_mainfile(filepath='out.blend')
+bpy.ops.wm.save_as_mainfile(filepath='out.blend', relative_remap=False)
