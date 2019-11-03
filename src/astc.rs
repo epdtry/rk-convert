@@ -78,7 +78,7 @@ impl IntegerEncoding {
     }
 
     fn decode_sequence_bits(self, n: usize, w: u128) -> Vec<u8> {
-        assert!(self.max_value() <= 0xff);
+        assert!(self.max_value() <= 256);
         let mut out = Vec::with_capacity(n);
 
         for i in 0 .. n {
@@ -90,7 +90,7 @@ impl IntegerEncoding {
     }
 
     fn decode_sequence_trits(self, n: usize, w: u128) -> Vec<u8> {
-        assert!(self.max_value() <= 0xff);
+        assert!(self.max_value() <= 256);
         let mut out = Vec::with_capacity(n);
         let block_size = self.bits as usize * 5 + 8;
 
@@ -163,7 +163,7 @@ impl IntegerEncoding {
     }
 
     fn decode_sequence_quints(self, n: usize, w: u128) -> Vec<u8> {
-        assert!(self.max_value() <= 0xff);
+        assert!(self.max_value() <= 256);
         let mut out = Vec::with_capacity(n);
         let block_size = self.bits as usize * 3 + 7;
 
@@ -318,7 +318,7 @@ pub fn decode(w: u32, h: u32, words: Vec<u128>) -> Image {
                 let hdr = w.bit(9);
                 void_hdrs_seen.insert(hdr);
                 let mut color = decode_void_extent_color(w.bits(64, 64) as u64, hdr);
-                color[3] = 0x80;
+                //color[3] = 0x80;
                 write_void_extent(&mut image, (bx, by), color);
                 continue;
             },
@@ -419,7 +419,15 @@ pub fn decode(w: u32, h: u32, words: Vec<u128>) -> Image {
         let num_endpoint_values = (0 .. parts as usize)
             .map(|i| num_values_for_cem(cems[i]))
             .sum();
+        if (bx, by) == (64, 1) {
+            eprintln!("looking for endpoint encoding for {} values in {} bits", num_endpoint_values, num_endpoint_bits);
+        }
         let endpoint_encoding = find_endpoint_encoding(num_endpoint_values, num_endpoint_bits);
+        if (bx, by) == (64, 1) {
+            eprintln!("got encoding {:?}, {} bits, range {}", endpoint_encoding, endpoint_encoding.bits_used(num_endpoint_values), endpoint_encoding.max_value());
+            let endpoint_encoding = IntegerEncoding { quint: false, trit: false, bits: 8 };
+            eprintln!("alternate encoding {:?}, {} bits, range {}", endpoint_encoding, endpoint_encoding.bits_used(num_endpoint_values), endpoint_encoding.max_value());
+        }
         assert!(endpoint_encoding.bits_used(num_endpoint_values) <= num_endpoint_bits);
         let endpoint_vs =
             endpoint_encoding.decode_sequence(num_endpoint_values, endpoint_bits)
@@ -473,7 +481,17 @@ pub fn decode(w: u32, h: u32, words: Vec<u128>) -> Image {
         // Compute final colors
 
         if parts > 1 { continue; } // TODO
-        if cems[0] != 6 { continue; }
+        //if cems[0] != 6 { continue; }
+
+        if (bx, by) == (64, 1) {
+            eprintln!("{},{}: {:?}", bx, by, endpoint_vs);
+            eprintln!("{},{}: {:?}", bx, by, endpoints);
+            eprintln!("{},{}: {:?}", bx, by, weight_vs);
+            eprintln!("{},{}: {:?}", bx, by, weight_vs.len());
+            dbg!(num_endpoint_bits);
+            dbg!(bottom);
+            eprintln!("mode = {:?}", endpoint_encoding);
+        }
 
         let pixels = [[0; 4]; 8 * 8];
         for y in 0 .. 8 {
@@ -505,12 +523,14 @@ pub fn decode(w: u32, h: u32, words: Vec<u128>) -> Image {
         endpoint_encs_seen.insert(endpoint_encoding);
     }
 
+    /*
     for test_enc in endpoint_encs_seen {
         dbg!(test_enc);
         eprintln!("unquant test: {:?}", (0 .. test_enc.max_value())
                   .map(|n| test_enc.unquantize_255(n as u8))
                   .collect::<Vec<_>>());
     }
+    */
 
     /*
     eprintln!("found {} distinct block modes", modes.len());
@@ -638,32 +658,27 @@ fn write_void_extent(image: &mut Image, pos: (usize, usize), color: [u8; 4]) {
 }
 
 
-static VALID_ENDPOINT_ENCODINGS: [IntegerEncoding; 11] = [
-    IntegerEncoding { quint: false, trit: true, bits: 1 },
-    IntegerEncoding { quint: true, trit: false, bits: 1 },
-    IntegerEncoding { quint: false, trit: true, bits: 2 },
-    IntegerEncoding { quint: true, trit: false, bits: 2 },
-    IntegerEncoding { quint: false, trit: true, bits: 3 },
-    IntegerEncoding { quint: true, trit: false, bits: 3 },
-    IntegerEncoding { quint: false, trit: true, bits: 4 },
-    IntegerEncoding { quint: true, trit: false, bits: 4 },
-    IntegerEncoding { quint: false, trit: true, bits: 5 },
-    IntegerEncoding { quint: true, trit: false, bits: 5 },
-    IntegerEncoding { quint: false, trit: true, bits: 6 },
-];
-
 fn find_endpoint_encoding(values: usize, bits: usize) -> IntegerEncoding {
-    for enc in VALID_ENDPOINT_ENCODINGS.iter().rev() {
-        if enc.bits_used(values) <= bits {
-            assert!(VALID_ENDPOINT_ENCODINGS.iter().all(|other| {
-                other == enc ||
-                other.bits_used(values) > bits ||
-                other.bits_used(values) < enc.bits_used(values)
-            }));
-            return *enc;
+    let mut best = IntegerEncoding { quint: false, trit: false, bits: 0 };
+
+    {
+        let mut try_enc = |enc: IntegerEncoding| {
+            if enc.bits_used(values) <= bits &&
+                    enc.max_value() > best.max_value() &&
+                    enc.max_value() <= 256 {
+                best = enc;
+            }
+        };
+
+        for bits in 0..9 {
+            try_enc(IntegerEncoding { quint: false, trit: false, bits });
+            try_enc(IntegerEncoding { quint: false, trit: true, bits });
+            try_enc(IntegerEncoding { quint: true, trit: false, bits });
         }
     }
-    panic!("not enough bits ({}) to encode {} endpoint values?", bits, values)
+
+    assert!(best.trit || best.quint || best.bits > 0);
+    best
 }
 
 
