@@ -1,7 +1,7 @@
 use std::cmp;
 use std::collections::{BTreeMap, HashMap};
 use std::mem;
-use crate::model::{Model, Object};
+use crate::model::{Model, Object, Vertex};
 
 pub fn flip_axes(o: &mut Object) {
     for m in &mut o.models {
@@ -125,98 +125,29 @@ pub fn get_connected_components(m: &Model) -> Vec<Model> {
     }
 
     // Assign a group number to each vertex.
-    let mut group = (0 .. m.verts.len()).collect::<Vec<_>>();
-
-    fn rep(group: &mut [usize], x: usize) -> usize {
-        if group[x] == x {
-            return x;
-        }
-        let parent = group[x];
-        let r = rep(group, parent);
-        if r != parent {
-            group[x] = r;
-        }
-        r
-    }
-
-    fn join(group: &mut [usize], a: usize, b: usize) {
-        let aa = rep(group, a);
-        let bb = rep(group, b);
-        let mm = cmp::min(aa, bb);
-        group[aa] = mm;
-        group[bb] = mm;
-    }
-
-    fn join3(group: &mut [usize], a: usize, b: usize, c: usize) {
-        let aa = rep(group, a);
-        let bb = rep(group, b);
-        let cc = rep(group, c);
-        let mm = cmp::min(cmp::min(aa, bb), cc);
-        group[aa] = mm;
-        group[bb] = mm;
-        group[cc] = mm;
-    }
+    let mut group = UnionFind::new(m.verts.len());
 
     // Vertices of the same tri are assigned the same group.
     for t in &m.tris {
-        join3(&mut group, t[0], t[1], t[2]);
+        group.join3(t[0], t[1], t[2]);
     }
 
     // Vertices that have (nearly) the same position get assigned the same group.
-    let mut bbox_min = m.verts[0].pos;
-    let mut bbox_max = m.verts[0].pos;
-    for v in &m.verts {
-        for i in 0..3 {
-            if v.pos[i] < bbox_min[i] {
-                bbox_min[i] = v.pos[i];
-            }
-            if v.pos[i] > bbox_max[i] {
-                bbox_max[i] = v.pos[i];
-            }
-        }
-    }
-    let approx_pos = |pos: [f32; 3]| {
-        let mut a = [0_i8; 3];
-        for i in 0..3 {
-            a[i] = ((pos[i] - bbox_min[i]) / (bbox_max[i] - bbox_min[i])) as i8;
-        }
-        a
-    };
-
-    fn dist2(a: [f32; 3], b: [f32; 3]) -> f32 {
-        a.iter().zip(b.iter()).map(|(&aa, &bb)| (aa - bb) * (aa - bb)).sum()
-    }
-
-    let mut by_pos = HashMap::<_, Vec<_>>::new();
-    for (i, v) in m.verts.iter().enumerate() {
-        by_pos.entry(approx_pos(v.pos)).or_default().push(i);
-    }
+    let nvs = NearbyVerts::index(&m.verts);
 
     for (i, v) in m.verts.iter().enumerate() {
-        let [x, y, z] = approx_pos(v.pos);
-        for xx in x - 1 .. x + 2 {
-            for yy in y - 1 .. y + 2 {
-                for zz in z - 1 .. z + 2 {
-                    if let Some(js) = by_pos.get(&[xx, yy, zz]) {
-                        for &j in js {
-                            if i == j || rep(&mut group, i) == rep(&mut group, j) {
-                                continue;
-                            }
-                            let d2 = dist2(v.pos, m.verts[j].pos);
-                            if d2 < 1e-12 {
-                                join(&mut group, i, j);
-                            }
-                        }
-                    }
-                }
+        nvs.for_each_nearby_vertex(v.pos, 1e-12, |j, _| {
+            if i == j || group.rep(i) == group.rep(j) {
+                return;
             }
-        }
+            group.join(i, j);
+        });
     }
 
 
     let mut tri_lists = BTreeMap::<_, Vec<_>>::new();
     for t in &m.tris {
-        let a = rep(&mut group, t[0]);
+        let a = group.rep(t[0]);
         tri_lists.entry(a).or_default().push(t.clone());
     }
 
@@ -231,4 +162,158 @@ pub fn get_connected_components(m: &Model) -> Vec<Model> {
     }
 
     models
+}
+
+pub fn merge_nearby_verts(o: &mut Object) {
+    o.models = o.models.iter().map(merge_nearby_verts_model).collect();
+}
+
+pub fn merge_nearby_verts_model(m: &Model) -> Model {
+    let nvs = NearbyVerts::index(&m.verts);
+    let mut group = UnionFind::new(m.verts.len());
+
+    for (i, v) in m.verts.iter().enumerate() {
+        nvs.for_each_nearby_vertex(v.pos, 1e-12, |j, w| {
+            if dist2([v.uv[0], v.uv[1], 0.0], [w.uv[0], w.uv[1], 0.0]) < 1e-12 {
+                group.join(i, j);
+            }
+        });
+    }
+
+    let changed = (0 .. m.verts.len()).filter(|&i| group.rep(i) != i).count();
+    eprintln!("removed {} verts by merging", changed);
+
+    let mut new_tris = Vec::with_capacity(m.tris.len());
+    for &tri in &m.tris {
+        new_tris.push([
+            group.rep(tri[0]),
+            group.rep(tri[1]),
+            group.rep(tri[2]),
+        ]);
+    }
+
+    Model {
+        name: m.name.clone(),
+        verts: m.verts.clone(),
+        tris: new_tris,
+    }
+}
+
+
+struct NearbyVerts<'a> {
+    by_pos: HashMap<[i8; 3], Vec<usize>>,
+    vs: &'a [Vertex],
+    bbox_min: [f32; 3],
+    bbox_max: [f32; 3],
+}
+
+impl<'a> NearbyVerts<'a> {
+    pub fn index(vs: &'a [Vertex]) -> NearbyVerts<'a> {
+        let (bbox_min, bbox_max) = compute_bbox(vs);
+        let mut nvs = NearbyVerts {
+            by_pos: HashMap::new(),
+            vs, bbox_min, bbox_max,
+        };
+
+        for (i, v) in nvs.vs.iter().enumerate() {
+            let apos = nvs.approx_pos(v.pos);
+            nvs.by_pos.entry(apos).or_default().push(i);
+        }
+
+        nvs
+    }
+
+    fn approx_pos(&self, pos: [f32; 3]) -> [i8; 3] {
+        let mut a = [0_i8; 3];
+        for i in 0..3 {
+            a[i] = ((pos[i] - self.bbox_min[i]) * 100.0 / (self.bbox_max[i] - self.bbox_min[i])) as i8;
+        }
+        a
+    }
+
+    pub fn for_each_nearby_vertex(
+        &self,
+        pos: [f32; 3],
+        max_dist2: f32,
+        mut f: impl FnMut(usize, &'a Vertex),
+    ) {
+        let [x, y, z] = self.approx_pos(pos);
+        for xx in x - 1 .. x + 2 {
+            for yy in y - 1 .. y + 2 {
+                for zz in z - 1 .. z + 2 {
+                    if let Some(js) = self.by_pos.get(&[xx, yy, zz]) {
+                        for &j in js {
+                            let d2 = dist2(pos, self.vs[j].pos);
+                            if d2 < max_dist2 {
+                                f(j, &self.vs[j]);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn dist2(a: [f32; 3], b: [f32; 3]) -> f32 {
+    a.iter().zip(b.iter()).map(|(&aa, &bb)| (aa - bb) * (aa - bb)).sum()
+}
+
+fn compute_bbox(vs: &[Vertex]) -> ([f32; 3], [f32; 3]) {
+    let mut bbox_min = vs[0].pos;
+    let mut bbox_max = vs[0].pos;
+    for v in vs {
+        for i in 0..3 {
+            if v.pos[i] < bbox_min[i] {
+                bbox_min[i] = v.pos[i];
+            }
+            if v.pos[i] > bbox_max[i] {
+                bbox_max[i] = v.pos[i];
+            }
+        }
+    }
+    (bbox_min, bbox_max)
+}
+
+
+struct UnionFind {
+    group: Vec<usize>,
+}
+
+impl UnionFind {
+    pub fn new(len: usize) -> UnionFind {
+        UnionFind {
+            group: (0 .. len).collect(),
+        }
+    }
+
+    pub fn rep(&mut self, x: usize) -> usize {
+        if self.group[x] == x {
+            return x;
+        }
+        let parent = self.group[x];
+        let r = self.rep(parent);
+        if r != parent {
+            self.group[x] = r;
+        }
+        r
+    }
+
+    pub fn join(&mut self, a: usize, b: usize) {
+        let aa = self.rep(a);
+        let bb = self.rep(b);
+        let mm = cmp::min(aa, bb);
+        self.group[aa] = mm;
+        self.group[bb] = mm;
+    }
+
+    pub fn join3(&mut self, a: usize, b: usize, c: usize) {
+        let aa = self.rep(a);
+        let bb = self.rep(b);
+        let cc = self.rep(c);
+        let mm = cmp::min(cmp::min(aa, bb), cc);
+        self.group[aa] = mm;
+        self.group[bb] = mm;
+        self.group[cc] = mm;
+    }
 }
