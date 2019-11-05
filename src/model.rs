@@ -22,14 +22,19 @@ const SEC_VERTEX_WEIGHT: u32 = 17;
 pub struct Model {
     pub name: String,
     pub verts: Vec<Vertex>,
-    pub tris: Vec<[usize; 3]>,
+    pub tris: Vec<Triangle>,
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct Vertex {
     pub pos: [f32; 3],
-    pub uv: [f32; 2],
     pub bone_weights: [BoneWeight; 4],
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Triangle {
+    pub verts: [usize; 3],
+    pub uvs: [[f32; 2]; 3],
 }
 
 #[derive(Clone, Debug, Default)]
@@ -187,15 +192,20 @@ impl<T: Read + Seek> ModelFile<T> {
         // Parse basic model elements
 
         m.verts.reserve(verts.len());
+        let mut vert_uv = Vec::with_capacity(verts.len());
         for (pos, uv) in verts {
-            let uv = [uv[0] as f32 / 32767.0, uv[1] as f32 / -32767.0];
-            m.verts.push(Vertex { pos, uv, .. Vertex::default() });
+            m.verts.push(Vertex { pos, .. Vertex::default() });
+            vert_uv.push([uv[0] as f32 / 32767.0, uv[1] as f32 / -32767.0]);
         }
 
         assert!(indices.len() % 3 == 0, "expected a multiple of three indices");
         m.tris.reserve(indices.len() / 3);
         for xs in indices.chunks_exact(3) {
-            m.tris.push([xs[0] as usize, xs[1] as usize, xs[2] as usize]);
+            let (a, b, c) = (xs[0] as usize, xs[1] as usize, xs[2] as usize);
+            m.tris.push(Triangle {
+                verts: [a, b, c],
+                uvs: [vert_uv[a], vert_uv[b], vert_uv[c]],
+            });
         }
 
         // Parse bones and bone weights

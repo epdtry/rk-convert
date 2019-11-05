@@ -40,7 +40,13 @@ def transform(m, v):
     return (x, y, z)
 
 
-Model = namedtuple('Model', ('name', 'verts', 'uvs', 'tris', 'weights', 'edges'))
+Triangle = namedtuple('Triangle', ('verts', 'uvs'))
+Model = namedtuple('Model', ('name', 'verts', 'tris', 'weights', 'edges'))
+
+def read_triangle(f):
+    verts = read_struct(f, '<3I')
+    uvs = [read_struct(f, '<2f') for _ in range(3)]
+    return Triangle(verts, uvs)
 
 def read_model(f):
     num_verts, num_tris, num_weights = read_struct(f, '<III')
@@ -48,16 +54,18 @@ def read_model(f):
     name = read_str(f)
 
     verts = [read_struct(f, '<3f') for _ in range(num_verts)]
-    uvs = [read_struct(f, '<2f') for _ in range(num_verts)]
-    tris = [read_struct(f, '<3I') for _ in range(num_tris)]
+    tris = [read_triangle(f) for _ in range(num_tris)]
     weights = [read_struct(f, '<IIf') for _ in range(num_weights)]
 
     print('read %d verts, %d tris, %d weights' %
             (len(verts), len(tris), len(weights)))
 
-    edges = [x for a,b,c in tris for x in [(a,b),(b,c),(c,a)]]
+    edges = []
+    for t in tris:
+        a, b, c = t.verts
+        edges.extend([(a,b),(b,c),(c,a)])
 
-    return Model(name, verts, uvs, tris, weights, edges)
+    return Model(name, verts, tris, weights, edges)
 
 
 
@@ -118,15 +126,15 @@ n_image.image = bpy.data.images.load(os.path.abspath('pony.tga'))
 for m in models:
 
     mesh = bpy.data.meshes.new('MeshData-%s' % m.name)
-    mesh.from_pydata(m.verts, m.edges, m.tris)
+    mesh.from_pydata(m.verts, m.edges, [t.verts for t in m.tris])
     ok = mesh.validate()
     assert ok, 'mesh validation failed'
     mesh.calc_loop_triangles()
 
     uvs = mesh.uv_layers.new()
-    for loop_tri in mesh.loop_triangles:
-        for (loop_index, vert_index) in zip(loop_tri.loops, loop_tri.vertices):
-            uvs.data[loop_index].uv = m.uvs[vert_index]
+    for (i, loop_tri) in enumerate(mesh.loop_triangles):
+        for (j, loop_index) in enumerate(loop_tri.loops):
+            uvs.data[loop_index].uv = m.tris[i].uvs[j]
 
     mesh.materials.append(mat)
 
