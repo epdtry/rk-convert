@@ -189,6 +189,8 @@ impl<T: Read + Seek> ModelFile<T> {
                 Ok((strs.clone(), vals))
             })?;
 
+        eprintln!("parts = {:?}", part_names);
+
         // Parse basic model elements
 
         m.verts.reserve(verts.len());
@@ -262,7 +264,9 @@ impl<T: Read + Seek> ModelFile<T> {
         // Parse other Object-level info
 
         if materials.len() != 0 {
-            assert!(materials.len() == 1, "expected only one set of materials");
+            if materials.len() > 1 {
+                eprintln!("warning: ignoring extra materials {:?}", &materials[1..]);
+            }
             o.material = materials[0].0.iter().find(|s| s.len() > 0).cloned();
             if let Some(ref name) = o.material {
                 assert!(materials[0].0.iter().all(|s| s.len() == 0 || s == name),

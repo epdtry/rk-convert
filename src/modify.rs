@@ -73,6 +73,16 @@ fn mat_mul(a: &[f32; 16], b: &[f32; 16]) -> [f32; 16] {
 }
 
 
+pub fn prune_degenerate_tris(o: &mut Object) {
+    for m in &mut o.models {
+        m.tris.retain(|t| {
+            t.verts[0] != t.verts[1] &&
+            t.verts[1] != t.verts[2] &&
+            t.verts[2] != t.verts[0]
+        });
+    }
+}
+
 pub fn prune_verts(o: &mut Object) {
     for m in &mut o.models {
         prune_model_verts(m);
@@ -135,6 +145,7 @@ pub fn get_connected_components(m: &Model) -> Vec<Model> {
     }
 
     // Vertices that have (nearly) the same position get assigned the same group.
+    /*
     let nvs = NearbyVerts::index(&m.verts);
 
     for (i, v) in m.verts.iter().enumerate() {
@@ -145,6 +156,7 @@ pub fn get_connected_components(m: &Model) -> Vec<Model> {
             group.join(i, j);
         });
     }
+    */
 
 
     let mut tri_lists = BTreeMap::<_, Vec<_>>::new();
@@ -479,5 +491,15 @@ impl EdgeTriMap {
 
     pub fn edge_tris(&self, a: usize, b: usize) -> &HashSet<usize> {
         self.map.get(&Self::edge_id(a, b)).unwrap_or(&self.empty)
+    }
+}
+
+
+pub fn flip_normals(o: &mut Object) {
+    for m in &mut o.models {
+        for t in &mut m.tris {
+            t.verts.swap(1, 2);
+            t.uvs.swap(1, 2);
+        }
     }
 }
