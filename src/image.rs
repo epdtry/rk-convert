@@ -30,6 +30,13 @@ impl Image {
         }
     }
 
+    pub fn bytes_mut(&mut self) -> &mut [u8] {
+        unsafe {
+            let byte_len = self.data.len() * 4;
+            slice::from_raw_parts_mut(self.data.as_mut_ptr() as *mut u8, byte_len)
+        }
+    }
+
     pub fn write_raw<W: Write>(&self, w: W) -> io::Result<()> {
         let mut w = w;
         w.write_all(self.bytes())

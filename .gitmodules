@@ -1,0 +1,3 @@
+[submodule "deps/astc-encoder"]
+	path = deps/astc-encoder
+	url = https://github.com/ARM-software/astc-encoder
