@@ -12,7 +12,8 @@ for i, x in enumerate(sys.argv):
         break
 
 assert len(args) == 1, 'usage: import_model.py <file.model>'
-f = open(args[0], 'rb')
+model_path = args[0]
+f = open(model_path, 'rb')
 
 def read_struct(f, fmt):
     sz = struct.calcsize(fmt)
@@ -41,7 +42,7 @@ def transform(m, v):
 
 
 Triangle = namedtuple('Triangle', ('verts', 'uvs'))
-Model = namedtuple('Model', ('name', 'verts', 'tris', 'weights', 'edges'))
+Model = namedtuple('Model', ('name', 'verts', 'tris', 'weights', 'material', 'edges'))
 
 def read_triangle(f):
     verts = read_struct(f, '<3I')
@@ -52,6 +53,7 @@ def read_model(f):
     num_verts, num_tris, num_weights = read_struct(f, '<III')
 
     name = read_str(f)
+    material = read_str(f)
 
     verts = [read_struct(f, '<3f') for _ in range(num_verts)]
     tris = [read_triangle(f) for _ in range(num_tris)]
@@ -65,7 +67,7 @@ def read_model(f):
         a, b, c = t.verts
         edges.extend([(a,b),(b,c),(c,a)])
 
-    return Model(name, verts, tris, weights, edges)
+    return Model(name, verts, tris, weights, material, edges)
 
 
 
@@ -104,22 +106,30 @@ if len(bones) > 0:
 
 
 # Create material object
-mat = bpy.data.materials.new(name='Material')
-mat.use_nodes = True
-ntree = mat.node_tree
+def create_texture_material(path):
+    mat = bpy.data.materials.new(name='Material')
+    mat.use_nodes = True
+    ntree = mat.node_tree
 
-for n in list(ntree.nodes):
-    ntree.nodes.remove(n)
+    for n in list(ntree.nodes):
+        ntree.nodes.remove(n)
 
-n_output = ntree.nodes.new('ShaderNodeOutputMaterial')
-n_emission = ntree.nodes.new('ShaderNodeEmission')
-n_image = ntree.nodes.new('ShaderNodeTexImage')
+    n_output = ntree.nodes.new('ShaderNodeOutputMaterial')
+    n_emission = ntree.nodes.new('ShaderNodeEmission')
+    n_image = ntree.nodes.new('ShaderNodeTexImage')
 
-ntree.links.new(n_emission.inputs['Color'], n_image.outputs['Color'])
-ntree.links.new(n_output.inputs['Surface'], n_emission.outputs['Emission'])
+    ntree.links.new(n_emission.inputs['Color'], n_image.outputs['Color'])
+    ntree.links.new(n_output.inputs['Surface'], n_emission.outputs['Emission'])
 
-n_image.image = bpy.data.images.load(os.path.abspath('pony.tga'))
+    n_image.image = bpy.data.images.load(os.path.abspath(path))
 
+    return mat
+
+_TEXTURE_MATERIAL_CACHE = {}
+def get_texture_material(path):
+    if path not in _TEXTURE_MATERIAL_CACHE:
+        _TEXTURE_MATERIAL_CACHE[path] = create_texture_material(path)
+    return _TEXTURE_MATERIAL_CACHE[path]
 
 # Create mesh objects
 
@@ -128,7 +138,8 @@ for m in models:
     mesh = bpy.data.meshes.new('MeshData-%s' % m.name)
     mesh.from_pydata(m.verts, m.edges, [t.verts for t in m.tris])
     ok = mesh.validate()
-    assert ok, 'mesh validation failed'
+    if not ok:
+        print('warning: mesh validation failed on %s' % m.name)
     mesh.calc_loop_triangles()
 
     uvs = mesh.uv_layers.new()
@@ -136,7 +147,8 @@ for m in models:
         for (j, loop_index) in enumerate(loop_tri.loops):
             uvs.data[loop_index].uv = m.tris[i].uvs[j]
 
-    mesh.materials.append(mat)
+    material_path = os.path.join(os.path.dirname(model_path), m.material + '.png')
+    mesh.materials.append(get_texture_material(material_path))
 
     mesh_obj = bpy.data.objects.new('Mesh-%s' % m.name, mesh)
 
