@@ -11,7 +11,7 @@ fn io_main() -> io::Result<()> {
     let mut img = pf.read_image()?;
 
     let mut out_file = File::create(&args[2])?;
-    img.write_raw(out_file)?;
+    img.write_png(out_file)?;
 
     Ok(())
 }
