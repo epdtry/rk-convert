@@ -172,6 +172,7 @@ pub fn get_connected_components(m: &Model) -> Vec<Model> {
             name: format!("{}-cc{}", m.name, i),
             verts: m.verts.clone(),
             tris: tris,
+            material: m.material.clone(),
         });
     }
 

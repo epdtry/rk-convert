@@ -23,6 +23,7 @@ pub struct Model {
     pub name: String,
     pub verts: Vec<Vertex>,
     pub tris: Vec<Triangle>,
+    pub material: String,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -55,7 +56,6 @@ pub struct Bone {
 pub struct Object {
     pub models: Vec<Model>,
     pub bones: Vec<Bone>,
-    pub material: Option<String>,
 }
 
 
@@ -170,12 +170,13 @@ impl<T: Read + Seek> ModelFile<T> {
             self.read_tagged_section_with(&headers, SEC_SUBOBJ_NAME, |r| {
                 r.read_fixed_str(&mut [0; 64])
             })?;
-        let part_face_ranges: Vec<Range<usize>> =
+        let part_face_ranges: Vec<(Range<usize>, usize)> =
             self.read_tagged_section_with(&headers, SEC_SUBOBJ_RANGE, |r| {
                 let count = r.read_one::<u32>()? as usize;
                 let offset = r.read_one::<u32>()? as usize / 3;
-                let _unk = r.read_one::<[u32; 2]>()?;
-                Ok(offset .. offset + count)
+                let material_id = r.read_one::<u32>()? as usize;
+                let _unk = r.read_one::<u32>()?;
+                Ok((offset .. offset + count, material_id))
             })?;
         let raw_bones: Vec<RawBone> = self.read_tagged_section(&headers, SEC_BONE)?;
         let vert_weights: Vec<([u8; 4], [u16; 4])> =
@@ -188,8 +189,6 @@ impl<T: Read + Seek> ModelFile<T> {
                 let vals = r.read_one::<[f32; 4]>()?;
                 Ok((strs.clone(), vals))
             })?;
-
-        eprintln!("parts = {:?}", part_names);
 
         // Parse basic model elements
 
@@ -252,25 +251,23 @@ impl<T: Read + Seek> ModelFile<T> {
         // Parse subobject info and build separate Models
 
         assert!(part_names.len() == part_face_ranges.len());
-        for (part_name, face_range) in part_names.into_iter().zip(part_face_ranges.into_iter()) {
+        let it = part_names.into_iter().zip(part_face_ranges.into_iter());
+        for (part_name, (face_range, material_id)) in it {
             let m2 = Model {
                 name: part_name,
                 verts: m.verts.clone(),
                 tris: m.tris[face_range].to_owned(),
+                material: materials[material_id].0[0].clone(),
             };
             o.models.push(m2);
         }
 
-        // Parse other Object-level info
+        // Sanity-check material lists.
 
         if materials.len() != 0 {
-            if materials.len() > 1 {
-                eprintln!("warning: ignoring extra materials {:?}", &materials[1..]);
-            }
-            o.material = materials[0].0.iter().find(|s| s.len() > 0).cloned();
-            if let Some(ref name) = o.material {
-                assert!(materials[0].0.iter().all(|s| s.len() == 0 || s == name),
-                    "expected all material names to match, but got {:?}", materials[0].0);
+            for &(ref names, _) in &materials {
+                assert!(names.iter().all(|s| s.len() == 0 || s == &names[0]),
+                    "expected all material names to match, but got {:?}", names);
             }
         }
 
@@ -278,6 +275,7 @@ impl<T: Read + Seek> ModelFile<T> {
     }
 }
 
+#[derive(Debug)]
 pub struct SectionHeader {
     pub tag: u32,
     pub offset: u32,

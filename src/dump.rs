@@ -19,8 +19,6 @@ pub fn dump_object<W: Write>(w: &mut W, o: &Object) -> io::Result<()> {
         }
     }
 
-    // TODO: o.material
-
     Ok(())
 }
 
@@ -39,6 +37,8 @@ pub fn dump_model<W: Write>(w: &mut W, m: &Model) -> io::Result<()> {
     w.write_u32::<LE>(weights.len() as u32)?;
 
     write_str(w, &m.name)?;
+    // TODO: material
+    //write_str(w, &m.material)?;
 
     for v in &m.verts {
         for &x in &v.pos {
