@@ -17,6 +17,7 @@ pub fn dump_object<W: Write>(w: &mut W, o: &Object) -> io::Result<()> {
         for &x in &b.matrix {
             w.write_f32::<LE>(x)?;
         }
+        w.write_u8(b.connected as u8)?;
     }
 
     Ok(())

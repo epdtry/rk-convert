@@ -31,7 +31,8 @@ def read_bone(f):
     if parent == 0xffffffff:
         parent = None
     matrix = read_struct(f, '<16f')
-    return (name, parent, matrix)
+    connected = read_struct(f, '<b')[0] != 0
+    return (name, parent, matrix, connected)
 
 def transform(m, v):
     # `m` is in column-major order
@@ -95,12 +96,17 @@ if len(bones) > 0:
     bpy.ops.object.mode_set(mode='EDIT', toggle=False)
 
     edit_bones = arm.edit_bones
-    bs = [arm.edit_bones.new(name) for name, _, _ in bones]
-    for b, (_, parent, matrix) in zip(bs, bones):
+    bs = [arm.edit_bones.new(name) for name, _, _, _ in bones]
+    for b, (_, parent, matrix, _) in zip(bs, bones):
         b.head = transform(matrix, (0, 0, 0))
         b.tail = transform(matrix, (1, 0, 0))
         if parent is not None:
             b.parent = bs[parent]
+
+    # Set use_connect flags only once all parents have been positioned.
+    for b, (name, _, _, connected) in zip(bs, bones):
+        if connected:
+            b.use_connect = True
 
     bpy.ops.object.mode_set(mode='OBJECT')
 
@@ -157,7 +163,7 @@ for m in models:
     if len(bones) > 0:
         # Create vertex groups (one per bone)
         vgs = []
-        for (name, _, _) in bones:
+        for (name, _, _, _) in bones:
             vgs.append(mesh_obj.vertex_groups.new(name=name))
 
         # Add vertex weights

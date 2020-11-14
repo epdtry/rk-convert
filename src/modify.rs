@@ -1,7 +1,7 @@
 use std::cmp;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::mem;
-use crate::model::{Model, Object, Vertex, Triangle};
+use crate::model::{Model, Object, Vertex, Triangle, Bone};
 
 pub fn flip_axes(o: &mut Object) {
     for m in &mut o.models {
@@ -70,6 +70,83 @@ fn mat_mul(a: &[f32; 16], b: &[f32; 16]) -> [f32; 16] {
         }
     }
     out
+}
+
+fn bone_head_pos(b: &Bone) -> [f32; 3] {
+    let m = &b.matrix;
+    [m[12], m[13], m[14]]
+}
+
+/// Compute the direction vector of the bone.
+fn bone_direction(b: &Bone) -> [f32; 3] {
+    let m = &b.matrix;
+    // The default direction for an untransformed bone is `(1, 0, 0)`, so we get the transformed
+    // direction vector by extracting the first (X) column of the matrix.
+    [m[0], m[1], m[2]]
+}
+
+fn calc_bone_len(o: &Object, b: &Bone) -> Option<f32> {
+    if b.children.len() == 0 {
+        return None;
+    }
+
+    let parent_head = bone_head_pos(b);
+    let parent_dir = bone_direction(b);
+    let parent_dir_len = vdot(parent_dir, parent_dir).sqrt();
+
+    let mut lens = Vec::with_capacity(b.children.len());
+    for &j in &b.children {
+        let child_pos = bone_head_pos(&o.bones[j]);
+        let child_offset = vsub(child_pos, parent_head);
+        let len = vdot(child_offset, parent_dir) / parent_dir_len;
+        lens.push(len);
+        let projected = vadd(parent_head, vmul(parent_dir, len));
+        // All children must be on the parent bone's line.
+        if dist2(child_pos, projected) > 1e-6 {
+            return None;
+        }
+    }
+
+    // All lengths must be the same.
+    let avg_len = lens.iter().cloned().sum::<f32>() / lens.len() as f32;
+    if lens.iter().any(|&l| (l - avg_len).abs() > 1e-6) {
+        return None;
+    }
+
+    // The length must be positive.
+    if avg_len <= 0.0 {
+        return None;
+    }
+
+    Some(avg_len)
+}
+
+pub fn connect_bone_chains(o: &mut Object, default_length: f32) {
+    let mut connect_bones = vec![false; o.bones.len()];
+
+    for i in 0 .. o.bones.len() {
+        let opt_len = calc_bone_len(o, &o.bones[i]);
+        let c = opt_len.unwrap_or(default_length);
+        let scale_mat = [
+            c, 0.0, 0.0, 0.0,
+            0.0, c, 0.0, 0.0,
+            0.0, 0.0, c, 0.0,
+            0.0, 0.0, 0.0, 1.0,
+        ];
+        let b = &mut o.bones[i];
+        // This order of multiplication affects only the sizes, not the origins.
+        b.matrix = mat_mul(&b.matrix, &scale_mat);
+
+        if opt_len.is_some() {
+            for &j in &b.children {
+                connect_bones[j] = true;
+            }
+        }
+    }
+
+    for (b, connect) in o.bones.iter_mut().zip(connect_bones.into_iter()) {
+        b.connected = connect;
+    }
 }
 
 
@@ -406,6 +483,10 @@ fn vadd(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
 
 fn vsub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+
+fn vmul(a: [f32; 3], c: f32) -> [f32; 3] {
+    [a[0] * c, a[1] * c, a[2] * c]
 }
 
 fn vdot(a: [f32; 3], b: [f32; 3]) -> f32 {

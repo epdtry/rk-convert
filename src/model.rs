@@ -50,6 +50,9 @@ pub struct Bone {
     pub children: Vec<usize>,
     pub name: String,
     pub matrix: [f32; 16],
+    /// Is this bone connected to its parent?  This causes the head of this bone to track the tail
+    /// of its parent.
+    pub connected: bool,
 }
 
 #[derive(Clone, Debug, Default)]
