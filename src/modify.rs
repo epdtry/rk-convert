@@ -441,14 +441,18 @@ pub fn fix_seams(o: &mut Object) {
                             continue;
                         }
 
+                        // `i,j,k` correspond to the vertices A,B,C in the diagram above.  If the
+                        // offsets `B - A` and `C - A` point in the same direction, then this is a
+                        // seam as described.
                         let d1 = vsub(m.verts[j].pos, v.pos);
                         let d2 = vsub(m.verts[k].pos, v.pos);
                         let dist1 = vdot(d1, d1).sqrt();
                         let dist2 = vdot(d2, d2).sqrt();
-                        if (vdot(d1, d2) - (dist1 * dist2)).abs() > 1e-3 {
+                        if (vdot(d1, d2) - (dist1 * dist2)).abs() > 1e-6 {
                             continue;
                         }
 
+                        // Figure out whether `j` or `k` is closer.
                         let (near, far, frac) = if dist1 < dist2 {
                             (j, k, dist1 / dist2)
                         } else {
