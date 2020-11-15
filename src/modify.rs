@@ -589,3 +589,15 @@ pub fn flip_normals(o: &mut Object) {
         }
     }
 }
+
+
+/// Remove triangles whose UV coordinates fall entirely within the `bounds`.
+pub fn remove_tris_by_uv(o: &mut Object, bounds: [[f32; 2]; 2]) {
+    let [[u0, v0], [u1, v1]] = bounds;
+    for m in &mut o.models {
+        m.tris.retain(|t| {
+            // Keep `t` if at least one of its UVs is outside the bounds.
+            t.uvs.iter().any(|&[u, v]| u < u0 || u > u1 || v < v0 || v > v1)
+        });
+    }
+}
