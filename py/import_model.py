@@ -170,7 +170,10 @@ for m in models:
         for v, b, w in m.weights:
             vgs[b].add((v,), w, type='REPLACE')
 
-        # TODO: add armature modifier
+        arm_mod = mesh_obj.modifiers.new('armature', type='ARMATURE')
+        arm_mod.object = arm_obj
+        arm_mod.use_deform_preserve_volume = True
+        arm_mod.use_vertex_groups = True
 
 
 # Sove file
