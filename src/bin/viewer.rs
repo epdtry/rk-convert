@@ -1,16 +1,17 @@
+use std::cmp;
 use std::collections::HashMap;
 use std::env;
 use std::f32::consts::PI;
-use std::ffi::{CString, CStr};
+use std::ffi::{CString, CStr, OsStr};
 use std::fs::{self, File};
 use std::io;
 use std::path::Path;
 use std::ptr;
+use std::time::Instant;
 use gl::types::{GLenum, GLint, GLuint, GLsizei, GLvoid};
 use nalgebra::{Vector3, Vector4, Matrix4, Quaternion, UnitQuaternion};
 use rkengine::anim::AnimFile;
 use rkengine::model::ModelFile;
-use rkengine::modify;
 use rkengine::pvr::PvrFile;
 
 
@@ -43,6 +44,7 @@ void main() {
     color = texture2D(tex, uv);
 }
 ";
+
 
 fn compile_shader(kind: GLenum, src: &str) -> GLuint {
     unsafe {
@@ -101,7 +103,7 @@ fn main() -> io::Result<()> {
     let args = env::args_os().collect::<Vec<_>>();
     assert!(
         args.len() == 2 || args.len() == 3,
-        "usage: {} <model.rk> [input.anim]",
+        "usage: {} <model.rk> [anim.csv|anim.anim]",
         args[0].to_string_lossy(),
     );
 
@@ -112,16 +114,51 @@ fn main() -> io::Result<()> {
     let mut mf = ModelFile::new(File::open(model_path)?);
     let mut o = mf.read_object()?;
 
-    let mut anim = if let Some(anim_path) = anim_path {
-        let mut af = AnimFile::new(File::open(anim_path)?);
-        Some(af.read_anim()?)
+    eprintln!("bones:");
+    for b in &o.bones {
+        if let Some(i) = b.parent {
+            eprintln!("  {}, parent = {}", b.name, o.bones[i].name);
+        } else {
+            eprintln!("  {}", b.name);
+        }
+    }
+
+    struct AnimRange {
+        name: String,
+        start: usize,
+        end: usize,
+        frame_rate: u32,
+    }
+    let (anim, anim_ranges) = if let Some(anim_path) = anim_path {
+        if anim_path.extension() == Some(OsStr::new("csv")) {
+            let mut ranges = Vec::new();
+            let mut reader = csv::ReaderBuilder::new()
+                .has_headers(false)
+                .from_path(anim_path)?;
+            for row in reader.deserialize() {
+                let (name, start, end, frame_rate): (String, usize, usize, u32) = row?;
+                ranges.push(AnimRange { name, start, end, frame_rate });
+            }
+
+            let mut af = AnimFile::new(File::open(anim_path.with_extension("anim"))?);
+            (Some(af.read_anim()?), ranges)
+        } else {
+            let mut af = AnimFile::new(File::open(anim_path)?);
+            let anim = af.read_anim()?;
+            let ranges = vec![AnimRange {
+                name: "all".into(),
+                start: 0,
+                end: anim.frames.len(),
+                frame_rate: 15,
+            }];
+            (Some(anim), ranges)
+        }
     } else {
-        None
+        (None, Vec::new())
     };
 
-    //modify::flip_normals(&mut o);
-
     o.models.retain(|m| !m.name.contains("eyes_") || m.name.contains("open"));
+    o.models.retain(|m| m.name != "a_rainbowdash_cloud");
 
     let mut material_images = HashMap::new();
     for m in &o.models {
@@ -313,16 +350,6 @@ fn main() -> io::Result<()> {
         });
     }
 
-    /*
-    let mut verts = Vec::new();
-    let uvs = vec![[0., 0.], [0., 0.], [0., 0.], [0., 0.], [0., 0.], [0., 0.]];
-    let draw_ops = vec![DrawOp {
-        start: 0,
-        len: 6,
-        tex: 0,
-    }];
-    */
-
     unsafe {
         gl::BindBuffer(gl::ARRAY_BUFFER, vbo);
         gl::BufferData(
@@ -353,7 +380,12 @@ fn main() -> io::Result<()> {
     // SDL event loop
 
     let mut event_pump = sdl_context.event_pump().unwrap();
-    let mut frame_counter = 0;
+    let mut range_counter = 0;
+    let mut start_time = Instant::now();
+    if anim.is_some() {
+        let r = &anim_ranges[0];
+        eprintln!("{}: {} frames", r.name, r.end - r.start);
+    }
 
     'main: loop {
         for event in event_pump.poll_iter() {
@@ -373,11 +405,25 @@ fn main() -> io::Result<()> {
             }
         }
 
-        frame_counter = (frame_counter + 1) % num_frames;
 
         if let Some(anim) = anim.as_ref() {
+            let r = &anim_ranges[range_counter];
+            let len = cmp::max(1, r.end - r.start);
+
+            let t = start_time.elapsed().as_secs_f32();
+            let frame_num_rel: i32 = ((t - 0.5) * r.frame_rate as f32).floor() as i32;
+            let frame_num: usize = r.start +
+                cmp::max(0, cmp::min(len as i32 - 1, frame_num_rel)) as usize;
+
+            if t >= len as f32 / r.frame_rate as f32 + 1. {
+                start_time = Instant::now();
+                range_counter = (range_counter + 1) % anim_ranges.len();
+                let r = &anim_ranges[range_counter];
+                eprintln!("{}: {} frames", r.name, r.end - r.start);
+            }
+
             // Update vertices using bones
-            let frame = &anim.frames[frame_counter];
+            let frame = &anim.frames[frame_num];
 
             assert_eq!(o.bones.len(), frame.bones.len());
             let mut bone_matrix = Vec::with_capacity(o.bones.len());
