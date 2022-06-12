@@ -7,7 +7,8 @@ use std::io;
 use std::path::Path;
 use std::ptr;
 use gl::types::{GLenum, GLint, GLuint, GLsizei, GLvoid};
-use nalgebra::{Vector3, Vector4, Matrix4};
+use nalgebra::{Vector3, Vector4, Matrix4, Quaternion, UnitQuaternion};
+use rkengine::anim::AnimFile;
 use rkengine::model::ModelFile;
 use rkengine::modify;
 use rkengine::pvr::PvrFile;
@@ -98,13 +99,25 @@ fn main() -> io::Result<()> {
     // Load model
 
     let args = env::args_os().collect::<Vec<_>>();
-    assert!(args.len() == 2, "usage: {} <input.rk>", args[0].to_string_lossy());
+    assert!(
+        args.len() == 2 || args.len() == 3,
+        "usage: {} <model.rk> [input.anim]",
+        args[0].to_string_lossy(),
+    );
 
     let model_path = Path::new(&args[1]);
+    let anim_path = args.get(2).map(|s| Path::new(s));
 
     eprintln!("load object from {}", model_path.display());
     let mut mf = ModelFile::new(File::open(model_path)?);
     let mut o = mf.read_object()?;
+
+    let mut anim = if let Some(anim_path) = anim_path {
+        let mut af = AnimFile::new(File::open(anim_path)?);
+        Some(af.read_anim()?)
+    } else {
+        None
+    };
 
     //modify::flip_normals(&mut o);
 
@@ -329,10 +342,18 @@ fn main() -> io::Result<()> {
     }
 
 
+    // Misc initialization
+
+    let num_frames = match anim {
+        Some(ref anim) => anim.frames.len(),
+        None => 1,
+    };
+
+
     // SDL event loop
 
     let mut event_pump = sdl_context.event_pump().unwrap();
-    let mut t = 0.0_f32;
+    let mut frame_counter = 0;
 
     'main: loop {
         for event in event_pump.poll_iter() {
@@ -352,23 +373,48 @@ fn main() -> io::Result<()> {
             }
         }
 
+        frame_counter = (frame_counter + 1) % num_frames;
 
-        /*
-        // Update vertex data
-        t += 1./60.;
+        if let Some(anim) = anim.as_ref() {
+            // Update vertices using bones
+            let frame = &anim.frames[frame_counter];
 
-        verts.clear();
+            assert_eq!(o.bones.len(), frame.bones.len());
+            let mut bone_matrix = Vec::with_capacity(o.bones.len());
+            for (bone, pose) in o.bones.iter().zip(frame.bones.iter()) {
+                let bone_mat_inv = Matrix4::from_column_slice(&bone.matrix)
+                    .try_inverse().unwrap();
+                let [a, b, c, d] = pose.quat;
+                let quat = UnitQuaternion::from_quaternion(Quaternion::new(a, b, c, d));
+                let [x, y, z] = pose.pos;
+                let pose_mat = Matrix4::new_translation(&Vector3::new(x, y, z)) *
+                    Matrix4::from(quat);
 
-        verts.push(matvec(m_combined, [0., 0., 1. * t.sin(), 1.]));
-        verts.push(matvec(m_combined, [1., 0., 1. * t.sin(), 1.]));
-        verts.push(matvec(m_combined, [0., 1., 1. * t.sin(), 1.]));
+                // We multiply the vertex position by `bone_mat_inv` to convert it to bone space,
+                // then multiply by `pose_mat` to get the posed position.
+                bone_matrix.push(pose_mat * bone_mat_inv);
+            }
 
-        verts.push(matvec(m_combined, [0., 0., 0., 1.]));
-        verts.push(matvec(m_combined, [t.cos(), t.sin(), 0., 1.]));
-        verts.push(matvec(m_combined, [-t.sin(), t.cos(), 0., 1.]));
+            verts.clear();
+            for m in &o.models {
+                for t in &m.tris {
+                    for &vi in &t.verts {
+                        let [x0, y0, z0] = m.verts[vi].pos;
+                        let v0 = Vector4::new(x0, y0, z0, 1.);
+                        let mut v = Vector4::new(0., 0., 0., 0.);
+                        let mut total_weight = 0.;
+                        for bw in &m.verts[vi].bone_weights {
+                            let weight = bw.weight as f32;
+                            v += bone_matrix[bw.bone] * v0 * weight;
+                            total_weight += weight;
+                        }
 
-        dbg!(&verts);
-        */
+                        verts.push(m_combined * (v / total_weight));
+                    }
+                }
+            }
+        }
+
 
         unsafe {
             gl::BindBuffer(gl::ARRAY_BUFFER, vbo);
