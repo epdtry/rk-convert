@@ -7,6 +7,7 @@ use std::io;
 use std::path::Path;
 use std::ptr;
 use gl::types::{GLenum, GLint, GLuint, GLsizei, GLvoid};
+use nalgebra::{Vector3, Vector4, Matrix4};
 use rkengine::model::ModelFile;
 use rkengine::modify;
 use rkengine::pvr::PvrFile;
@@ -89,131 +90,8 @@ fn compile_shader_program() -> GLuint {
     }
 }
 
-fn compute_perspective_matrix(fov: f32, w: i32, h: i32) -> [f32; 16] {
-    let near = 0.1;
-    let far = 10.;
-    let top = near * (fov / 2.).tan();
-    let bottom = -top;
-    let left = bottom * w as f32 / h as f32;
-    let right = top * w as f32 / h as f32;
-
-    let (n, f, t, b, l, r) = (near, far, top, bottom, left, right);
-    /*
-    [
-        2 * n / (r - l), 0., 0., 0.,
-        0., 2 * n / (t - b), 0., 0.,
-        (r + l) / (r - l), (t + b) / (t - b), -(f + n) / (f - n), -1.,
-        0., 0., -2 * f * n / (f - n), 0.,
-    ]
-    */
-
-    /*
-    [
-        2. * n / (r - l), 0., (r + l) / (r - l), 0.,
-        0., 2. * n / (t - b), (t + b) / (t - b), 0.,
-        0., 0., -(f + n) / (f - n), -2. * f * n / (f - n),
-        0., 0., -1., 0.,
-    ]
-    */
-
-    [
-        n / r, 0., 0., 0.,
-        0., n / t, 0., 0.,
-        0., 0., -(f + n) / (f - n), -2. * f * n / (f - n),
-        0., 0., -1., 0.,
-    ]
-
-}
-
-fn scale(x: f32, y: f32, z: f32) -> [f32; 16] {
-    [
-        x, 0., 0., 0.,
-        0., y, 0., 0.,
-        0., 0., z, 0.,
-        0., 0., 0., 1.,
-    ]
-}
-
-fn scale_uniform(c: f32) -> [f32; 16] {
-    scale(c, c, c)
-}
-
-fn translate(x: f32, y: f32, z: f32) -> [f32; 16] {
-    [
-        1., 0., 0., x,
-        0., 1., 0., y,
-        0., 0., 1., z,
-        0., 0., 0., 1.,
-    ]
-}
-
-fn rotate_x(theta: f32) -> [f32; 16] {
-    let s = theta.sin();
-    let c = theta.cos();
-    [
-        1., 0., 0., 0.,
-        0., c, -s, 0.,
-        0., s, c, 0.,
-        0., 0., 0., 1.,
-    ]
-}
-
-fn rotate_y(theta: f32) -> [f32; 16] {
-    let s = theta.sin();
-    let c = theta.cos();
-    [
-        c, 0., s, 0.,
-        0., 1., 0., 0.,
-        -s, 0., c, 0.,
-        0., 0., 0., 1.,
-    ]
-}
-
-fn rotate_z(theta: f32) -> [f32; 16] {
-    let s = theta.sin();
-    let c = theta.cos();
-    [
-        c, -s, 0., 0.,
-        s, c, 0., 0.,
-        0., 0., 1., 0.,
-        0., 0., 0., 1.,
-    ]
-}
-
-fn matmat(a: [f32; 16], b: [f32; 16]) -> [f32; 16] {
-    let mut c = [0.; 16];
-    for i in 0..4 {
-        for j in 0..4 {
-            let mut acc = 0.;
-            for k in 0..4 {
-                acc += a[4 * i + k] * b[4 * k + j];
-            }
-            c[i * 4 + j] = acc;
-        }
-    }
-    c
-}
-
-fn matmats(ms: &[[f32; 16]]) -> [f32; 16] {
-    let mut out = [
-        1., 0., 0., 0.,
-        0., 1., 0., 0.,
-        0., 0., 1., 0.,
-        0., 0., 0., 1.,
-    ];
-    for &m in ms {
-        out = matmat(out, m);
-    }
-    out
-}
-
-fn matvec(m: [f32; 16], v: [f32; 4]) -> [f32; 4] {
-    [
-        m[0] * v[0] + m[1] * v[1] + m[2] * v[2] + m[3] * v[3],
-        m[4] * v[0] + m[5] * v[1] + m[6] * v[2] + m[7] * v[3],
-        m[8] * v[0] + m[9] * v[1] + m[10] * v[2] + m[11] * v[3],
-        m[12] * v[0] + m[13] * v[1] + m[14] * v[2] + m[15] * v[3],
-    ]
+fn compute_perspective_matrix(fov: f32, w: i32, h: i32) -> Matrix4<f32> {
+    Matrix4::new_perspective(w as f32 / h as f32, fov, 0.1, 10.)
 }
 
 fn main() -> io::Result<()> {
@@ -278,14 +156,13 @@ fn main() -> io::Result<()> {
 
     // View setup
     let m_proj = compute_perspective_matrix(PI / 2., 1200, 900);
-    let m_combined = matmats(&[
-        m_proj,
-        translate(0., -1., -2.),
-        rotate_x(PI / 12.),
-        rotate_y(5. * PI / 4.),
-        scale_uniform(1. / 100.),
-        scale(1., -1., 1.),
-    ]);
+    let m_combined =
+        m_proj *
+        Matrix4::new_translation(&Vector3::new(0., -1., -2.)) *
+        Matrix4::new_rotation(Vector3::new(PI / 12., 0., 0.)) *
+        Matrix4::new_rotation(Vector3::new(0., 5. * PI / 4., 0.)) *
+        Matrix4::new_scaling(1. / 100.) *
+        Matrix4::from_diagonal(&Vector4::new(1., -1., 1., 1.));
 
 
     // OpenGL init
@@ -401,7 +278,7 @@ fn main() -> io::Result<()> {
             for &vi in &t.verts {
                 //verts.push(m.verts[vi].pos);
                 let [x, y, z] = m.verts[vi].pos;
-                verts.push(matvec(m_combined, [x, y, z, 1.]));
+                verts.push(m_combined * Vector4::new(x, y, z, 1.));
             }
             for &uv in &t.uvs {
                 uvs.push(uv);
@@ -505,7 +382,7 @@ fn main() -> io::Result<()> {
 
 
         unsafe {
-            gl::ClearColor(0.0, 0.0, 1.0, 0.0);
+            gl::ClearColor(0.3, 0.3, 0.3, 0.0);
             gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
 
             for op in &draw_ops {
