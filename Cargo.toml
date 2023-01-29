@@ -13,3 +13,4 @@ sdl2 = "0.34.5"
 gl = "0.14.0"
 nalgebra = "0.25.4"
 csv = "1.1.6"
+gltf-json = { version = "1.0.0", features = ["names", "KHR_materials_unlit"] }
