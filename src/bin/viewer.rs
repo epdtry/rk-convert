@@ -11,6 +11,7 @@ use std::time::Instant;
 use gl::types::{GLenum, GLint, GLuint, GLsizei, GLvoid};
 use nalgebra::{Vector3, Vector4, Matrix4, Quaternion, UnitQuaternion};
 use rkengine::anim::AnimFile;
+use rkengine::anim_extra::{self, AnimRange};
 use rkengine::model::ModelFile;
 use rkengine::pvr::PvrFile;
 
@@ -124,23 +125,9 @@ fn main() -> io::Result<()> {
     }
 
     // TODO: read anim.xml as well to get subobject visibility info
-    struct AnimRange {
-        name: String,
-        start: usize,
-        end: usize,
-        frame_rate: u32,
-    }
     let (anim, anim_ranges) = if let Some(anim_path) = anim_path {
         if anim_path.extension() == Some(OsStr::new("csv")) {
-            let mut ranges = Vec::new();
-            let mut reader = csv::ReaderBuilder::new()
-                .has_headers(false)
-                .from_path(anim_path)?;
-            for row in reader.deserialize() {
-                let (name, start, end, frame_rate): (String, usize, usize, u32) = row?;
-                ranges.push(AnimRange { name, start, end, frame_rate });
-            }
-
+            let ranges = anim_extra::read_anim_csv(anim_path)?;
             let mut af = AnimFile::new(File::open(anim_path.with_extension("anim"))?);
             (Some(af.read_anim()?), ranges)
         } else {
