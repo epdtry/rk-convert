@@ -23,10 +23,10 @@ fn io_main() -> io::Result<()> {
         eprintln!("generating {}", file_name);
         let mut f = File::create(file_name)?;
         writeln!(f, "solid {}", name).unwrap();
-        for idxs in &m.tris {
+        for tri in &m.tris {
             writeln!(f, "facet normal {:e} {:e} {:e}", 0.0, 0.0, 0.0)?;
             writeln!(f, " outer loop")?;
-            for &i in idxs {
+            for &i in &tri.verts {
                 let [x,y,z] = m.verts[i].pos;
                 writeln!(f, "  vertex {:e} {:e} {:e}", x, y, z)?;
             }

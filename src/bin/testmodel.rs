@@ -14,7 +14,10 @@ fn io_main() -> io::Result<()> {
     for m in &o.models {
         println!("  model has {} verts, {} tris", m.verts.len(), m.tris.len());
     }
-    println!("material: {:?}", o.material);
+    println!("model materials:");
+    for (i, m) in o.models.iter().enumerate() {
+        println!("model {} material: {:?}", i, m.material);
+    }
 
     println!("bone hierarchy:");
     fn print_bone(bs: &[Bone], i: usize, depth: usize) {
