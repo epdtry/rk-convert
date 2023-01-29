@@ -4,11 +4,13 @@ use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io;
 use std::path::Path;
-use gltf_json::{Root, Index, Node, Mesh, Scene, Accessor, Buffer};
+use gltf_json::{Root, Index, Node, Mesh, Scene, Accessor, Buffer, Skin};
 use gltf_json::accessor::{self, ComponentType, GenericComponentType};
 use gltf_json::buffer::{self, View};
 use gltf_json::mesh::{self, Primitive, Semantic};
+use gltf_json::scene;
 use gltf_json::validation::Checked;
+use nalgebra::{Vector3, Vector4, Matrix3, Matrix4, Rotation, Quaternion, UnitQuaternion};
 use rkengine::anim::AnimFile;
 use rkengine::anim_extra::{self, AnimRange};
 use rkengine::model::ModelFile;
@@ -68,6 +70,21 @@ impl GltfBuilder {
         let i = Index::new(self.root.scenes.len() as u32);
         self.root.scenes.push(scene);
         i
+    }
+
+    pub fn push_skin(&mut self, skin: Skin) -> Index<Skin> {
+        let i = Index::new(self.root.skins.len() as u32);
+        self.root.skins.push(skin);
+        i
+    }
+
+
+    pub fn node(&self, idx: Index<Node>) -> &Node {
+        &self.root.nodes[idx.value()]
+    }
+
+    pub fn node_mut(&mut self, idx: Index<Node>) -> &mut Node {
+        &mut self.root.nodes[idx.value()]
     }
 
 
@@ -206,14 +223,74 @@ impl PrimType for f32 {
     }
 }
 
-impl PrimType for [f32; 3] {
+fn iter_column_major(m: Matrix4<f32>) -> impl Iterator<Item = f32> {
+    (0..4).flat_map(move |j| {
+        (0..4).map(move |i| {
+            m[(i, j)]
+        })
+    })
+}
+
+fn to_column_major(m: Matrix4<f32>) -> [f32; 16] {
+    let mut out = [0.; 16];
+    for (x, y) in iter_column_major(m).zip(out.iter_mut()) {
+        *y = x;
+    }
+    out
+}
+
+impl PrimType for Matrix4<f32> {
     const COMPONENT_TYPE: GenericComponentType = GenericComponentType(ComponentType::F32);
-    const TYPE: accessor::Type = accessor::Type::Vec3;
-    const SIZE: usize = 12;
+    const TYPE: accessor::Type = accessor::Type::Mat4;
+    const SIZE: usize = 4 * 16;
     fn push_bytes(self, v: &mut Vec<u8>) {
-        v.extend_from_slice(&self[0].to_le_bytes());
-        v.extend_from_slice(&self[1].to_le_bytes());
-        v.extend_from_slice(&self[2].to_le_bytes());
+        for x in iter_column_major(self) {
+            x.push_bytes(v);
+        }
+    }
+}
+
+impl<T: PrimType> PrimType for [T; 3] {
+    const COMPONENT_TYPE: GenericComponentType = T::COMPONENT_TYPE;
+    const TYPE: accessor::Type = accessor::Type::Vec3;
+    const SIZE: usize = T::SIZE * 3;
+    fn push_bytes(self, v: &mut Vec<u8>) {
+        for &x in &self {
+            x.push_bytes(v);
+        }
+    }
+}
+
+impl<T: PrimType> PrimType for [T; 4] {
+    const COMPONENT_TYPE: GenericComponentType = T::COMPONENT_TYPE;
+    const TYPE: accessor::Type = accessor::Type::Vec4;
+    const SIZE: usize = T::SIZE * 4;
+    fn push_bytes(self, v: &mut Vec<u8>) {
+        for &x in &self {
+            x.push_bytes(v);
+        }
+    }
+}
+
+/*
+impl<T: PrimType> PrimType for [T; 16] {
+    const COMPONENT_TYPE: GenericComponentType = T::COMPONENT_TYPE;
+    const TYPE: accessor::Type = accessor::Type::Mat4;
+    const SIZE: usize = T::SIZE * 16;
+    fn push_bytes(self, v: &mut Vec<u8>) {
+        for &x in &self {
+            x.push_bytes(v);
+        }
+    }
+}
+*/
+
+impl PrimType for u16 {
+    const COMPONENT_TYPE: GenericComponentType = GenericComponentType(ComponentType::U16);
+    const TYPE: accessor::Type = accessor::Type::Scalar;
+    const SIZE: usize = 2;
+    fn push_bytes(self, v: &mut Vec<u8>) {
+        v.extend_from_slice(&self.to_le_bytes());
     }
 }
 
@@ -224,6 +301,22 @@ impl PrimType for u32 {
     fn push_bytes(self, v: &mut Vec<u8>) {
         v.extend_from_slice(&self.to_le_bytes());
     }
+}
+
+
+fn decompose_bone_matrix(m: Matrix4<f32>) -> (Vector3<f32>, UnitQuaternion<f32>, Vector3<f32>) {
+    let translate_vec4 = m * Vector4::new(0., 0., 0., 1.);
+    let translate: Vector3<f32> = translate_vec4.remove_row(3);
+
+    let mat3: Matrix3<f32> = m.remove_row(3).remove_column(3);
+
+    let rotate = UnitQuaternion::from_matrix(&mat3);
+
+    let rotate_inv_mat = rotate.inverse().to_rotation_matrix();
+    let scale_mat = mat3 * rotate_inv_mat;
+    let scale = scale_mat.diagonal();
+
+    (translate, rotate, scale)
 }
 
 
@@ -300,22 +393,121 @@ fn main() -> io::Result<()> {
 
     let mut gltf = GltfBuilder::default();
 
+    let mut bone_mats = Vec::with_capacity(o.bones.len());
+    let mut bone_mats_inv = Vec::with_capacity(o.bones.len());
+    for b in &o.bones {
+        let bone_mat = Matrix4::from_column_slice(&b.matrix);
+        bone_mats.push(bone_mat);
+        bone_mats_inv.push(bone_mat.try_inverse().unwrap());
+    }
+
+    let mut bone_nodes = Vec::with_capacity(o.bones.len());
+    let mut inverse_bind_matrices_vec = Vec::with_capacity(o.bones.len());
+    for (i, b) in o.bones.iter().enumerate() {
+        let local_mat = match b.parent {
+            None => bone_mats[i],
+            Some(j) => bone_mats_inv[j] * bone_mats[i],
+        };
+
+        inverse_bind_matrices_vec.push(bone_mats_inv[i]);
+
+        let (t, r, s) = decompose_bone_matrix(local_mat);
+
+        let node_idx = gltf.push_node(Node {
+            camera: None,
+            children: None,
+            matrix: None,
+            mesh: None,
+            rotation: Some(scene::UnitQuaternion([
+                r.quaternion().vector()[0],
+                r.quaternion().vector()[1],
+                r.quaternion().vector()[2],
+                r.quaternion().scalar(),
+            ])),
+            scale: Some(s.into()),
+            translation: Some(t.into()),
+            skin: None,
+            weights: None,
+            name: Some(b.name.clone()),
+            extensions: None,
+            extras: Default::default(),
+        });
+        bone_nodes.push(node_idx);
+    }
+
+    // Set bone parents
+    for (i, b) in o.bones.iter().enumerate() {
+        if let Some(j) = b.parent {
+            let bone_idx = bone_nodes[i];
+            let parent_idx = bone_nodes[j];
+            gltf.node_mut(parent_idx).children.get_or_insert_with(Vec::new).push(bone_idx);
+        }
+    }
+
+    let bone_root_idx = gltf.push_node(Node {
+        camera: None,
+        children: Some(o.bones.iter().enumerate()
+            .filter(|&(i, b)| b.parent.is_none())
+            .map(|(i, _)| bone_nodes[i])
+            .collect()),
+        matrix: None,
+        mesh: None,
+        rotation: None,
+        scale: None,
+        translation: None,
+        skin: None,
+        weights: None,
+        name: None,
+        extensions: None,
+        extras: Default::default(),
+    });
+    let inverse_bind_matrices_acc = gltf.push_prim_accessor(
+        &inverse_bind_matrices_vec, buffer::Target::ArrayBuffer, false);
+    let skin_idx = gltf.push_skin(Skin {
+        joints: bone_nodes,
+        skeleton: Some(bone_root_idx),
+        inverse_bind_matrices: Some(inverse_bind_matrices_acc),
+        name: None,
+        extensions: None,
+        extras: Default::default(),
+    });
+
+
     let mut model_nodes = Vec::with_capacity(o.models.len());
     for m in &o.models {
+        let mut attributes = HashMap::new();
         let pos_vec = m.verts.iter().map(|v| v.pos).collect::<Vec<_>>();
-        let pos_acc = gltf.push_prim_accessor(&pos_vec, buffer::Target::ArrayBuffer, false);
+        attributes.insert(Checked::Valid(Semantic::Positions),
+            gltf.push_prim_accessor(&pos_vec, buffer::Target::ArrayBuffer, false));
 
         let idx_vec = m.tris.iter()
             .flat_map(|t| t.verts.iter())
             .map(|&i| i as u32)
             .collect::<Vec<_>>();
-        let idx_acc = gltf.push_prim_accessor(&idx_vec, buffer::Target::ArrayBuffer, false);
+        let idx_acc = gltf.push_prim_accessor(&idx_vec, buffer::Target::ElementArrayBuffer, false);
+
+        // Joints and weights are specified in groups of 4.
+        let joints_vec = m.verts.iter().map(|v| [
+            v.bone_weights[0].bone as u16,
+            v.bone_weights[1].bone as u16,
+            v.bone_weights[2].bone as u16,
+            v.bone_weights[3].bone as u16,
+        ]).collect::<Vec<_>>();
+        attributes.insert(Checked::Valid(Semantic::Joints(0)),
+            gltf.push_prim_accessor(&joints_vec, buffer::Target::ArrayBuffer, false));
+
+        let weights_vec = m.verts.iter().map(|v| [
+            v.bone_weights[0].weight,
+            v.bone_weights[1].weight,
+            v.bone_weights[2].weight,
+            v.bone_weights[3].weight,
+        ]).collect::<Vec<_>>();
+        attributes.insert(Checked::Valid(Semantic::Weights(0)),
+            gltf.push_prim_accessor(&weights_vec, buffer::Target::ArrayBuffer, true));
 
         let prim = Primitive {
             indices: Some(idx_acc),
-            attributes: vec![
-                (Checked::Valid(Semantic::Positions), pos_acc),
-            ].into_iter().collect(),
+            attributes,
             material: None,
             mode: Checked::Valid(mesh::Mode::Triangles),
             targets: None,
@@ -339,7 +531,7 @@ fn main() -> io::Result<()> {
             rotation: None,
             scale: None,
             translation: None,
-            skin: None,
+            skin: Some(skin_idx),
             weights: None,
             name: Some(m.name.clone()),
             extensions: None,
