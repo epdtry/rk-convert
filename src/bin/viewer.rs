@@ -123,6 +123,7 @@ fn main() -> io::Result<()> {
         }
     }
 
+    // TODO: read anim.xml as well to get subobject visibility info
     struct AnimRange {
         name: String,
         start: usize,
@@ -157,6 +158,7 @@ fn main() -> io::Result<()> {
         (None, Vec::new())
     };
 
+    // XXX HACK
     o.models.retain(|m| !m.name.contains("eyes_") || m.name.contains("open"));
     o.models.retain(|m| m.name != "a_rainbowdash_cloud");
 
@@ -401,6 +403,25 @@ fn main() -> io::Result<()> {
                         // TODO: update projection matrix
                     }
                 },
+                sdl2::event::Event::KeyDown { keycode: Some(code), .. } => match code {
+                    sdl2::keyboard::Keycode::Left if anim.is_some() => {
+                        start_time = Instant::now();
+                        range_counter =
+                            (range_counter + anim_ranges.len() - 1) % anim_ranges.len();
+                        let r = &anim_ranges[range_counter];
+                        eprintln!("{}: {} frames", r.name, r.end - r.start);
+                    },
+                    sdl2::keyboard::Keycode::Right if anim.is_some() => {
+                        start_time = Instant::now();
+                        range_counter = (range_counter + 1) % anim_ranges.len();
+                        let r = &anim_ranges[range_counter];
+                        eprintln!("{}: {} frames", r.name, r.end - r.start);
+                    },
+                    sdl2::keyboard::Keycode::Escape => {
+                        break 'main;
+                    },
+                    _ => {},
+                },
                 _ => {},
             }
         }
@@ -417,9 +438,11 @@ fn main() -> io::Result<()> {
 
             if t >= len as f32 / r.frame_rate as f32 + 1. {
                 start_time = Instant::now();
+                /*
                 range_counter = (range_counter + 1) % anim_ranges.len();
                 let r = &anim_ranges[range_counter];
                 eprintln!("{}: {} frames", r.name, r.end - r.start);
+                */
             }
 
             // Update vertices using bones
