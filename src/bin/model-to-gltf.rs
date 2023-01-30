@@ -4,14 +4,23 @@ use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io;
 use std::path::Path;
-use gltf_json::{Root, Index, Node, Mesh, Scene, Accessor, Buffer, Skin, Animation};
+use gltf_json::{
+    Root, Index, Node, Mesh, Scene, Accessor, Buffer, Skin, Animation, Image, Texture, Material,
+};
 use gltf_json::accessor::{self, ComponentType, GenericComponentType};
 use gltf_json::animation;
 use gltf_json::buffer::{self, View};
+use gltf_json::extensions;
+use gltf_json::image::MimeType;
+use gltf_json::material::{
+    self, PbrMetallicRoughness, PbrBaseColorFactor, StrengthFactor, AlphaMode, EmissiveFactor,
+};
 use gltf_json::mesh::{self, Primitive, Semantic};
 use gltf_json::scene;
+use gltf_json::texture;
 use gltf_json::validation::Checked;
 use nalgebra::{Vector3, Vector4, Matrix3, Matrix4, Rotation, Quaternion, UnitQuaternion};
+use png;
 use rkengine::anim::{AnimFile, BonePose};
 use rkengine::anim_extra::{self, AnimRange};
 use rkengine::model::ModelFile;
@@ -82,6 +91,24 @@ impl GltfBuilder {
     pub fn push_animation(&mut self, animation: Animation) -> Index<Animation> {
         let i = Index::new(self.root.animations.len() as u32);
         self.root.animations.push(animation);
+        i
+    }
+
+    pub fn push_image(&mut self, image: Image) -> Index<Image> {
+        let i = Index::new(self.root.images.len() as u32);
+        self.root.images.push(image);
+        i
+    }
+
+    pub fn push_texture(&mut self, texture: Texture) -> Index<Texture> {
+        let i = Index::new(self.root.textures.len() as u32);
+        self.root.textures.push(texture);
+        i
+    }
+
+    pub fn push_material(&mut self, material: Material) -> Index<Material> {
+        let i = Index::new(self.root.materials.len() as u32);
+        self.root.materials.push(material);
         i
     }
 
@@ -257,6 +284,17 @@ impl PrimType for Matrix4<f32> {
     }
 }
 
+impl<T: PrimType> PrimType for [T; 2] {
+    const COMPONENT_TYPE: GenericComponentType = T::COMPONENT_TYPE;
+    const TYPE: accessor::Type = accessor::Type::Vec2;
+    const SIZE: usize = T::SIZE * 2;
+    fn push_bytes(self, v: &mut Vec<u8>) {
+        for &x in &self {
+            x.push_bytes(v);
+        }
+    }
+}
+
 impl<T: PrimType> PrimType for [T; 3] {
     const COMPONENT_TYPE: GenericComponentType = T::COMPONENT_TYPE;
     const TYPE: accessor::Type = accessor::Type::Vec3;
@@ -409,10 +447,67 @@ fn main() -> io::Result<()> {
 
     let mut gltf = GltfBuilder::default();
 
-    // Model
+    // Materials
 
-    const DEBUG_BONE: usize = 7;
-    const DEBUG_FRAME: usize = 10;
+    let mut keys = material_images.keys().collect::<Vec<_>>();
+    keys.sort();
+    let mut material_idxs = HashMap::with_capacity(material_images.len());
+    for name in keys {
+        let img = material_images.get(name).unwrap();
+        let png_bytes = img.to_png_vec();
+        let view_idx = gltf.push_bin_view(&png_bytes, buffer::Target::ArrayBuffer);
+
+        let image_idx = gltf.push_image(Image {
+            buffer_view: Some(view_idx),
+            mime_type: Some(MimeType("image/png".into())),
+            uri: None,
+            name: Some((*name).clone()),
+            extensions: None,
+            extras: Default::default(),
+        });
+
+        let texture_idx = gltf.push_texture(Texture {
+            source: image_idx,
+            sampler: None,
+            name: Some((*name).clone()),
+            extensions: None,
+            extras: Default::default(),
+        });
+
+        let material_idx = gltf.push_material(Material {
+            pbr_metallic_roughness: PbrMetallicRoughness {
+                base_color_texture: Some(texture::Info {
+                    index: texture_idx,
+                    tex_coord: 0,
+                    extensions: None,
+                    extras: Default::default(),
+                }),
+                base_color_factor: PbrBaseColorFactor([1., 1., 1., 1.]),
+                metallic_factor: StrengthFactor(0.),
+                roughness_factor: StrengthFactor(1.),
+                metallic_roughness_texture: None,
+                extensions: None,
+                extras: Default::default(),
+            },
+            alpha_cutoff: None,
+            alpha_mode: Checked::Valid(AlphaMode::Blend),
+            double_sided: false,
+            normal_texture: None,
+            occlusion_texture: None,
+            emissive_texture: None,
+            emissive_factor: EmissiveFactor([0., 0., 0.]),
+            name: Some((*name).clone()),
+            extensions: Some(extensions::material::Material {
+                unlit: Some(extensions::material::Unlit {}),
+                .. Default::default()
+            }),
+            extras: Default::default(),
+        });
+
+        material_idxs.insert((*name).to_owned(), material_idx);
+    }
+
+    // Bones
 
     let mut bone_mats = Vec::with_capacity(o.bones.len());
     let mut bone_mats_inv = Vec::with_capacity(o.bones.len());
@@ -424,7 +519,6 @@ fn main() -> io::Result<()> {
 
     let mut bone_nodes = Vec::with_capacity(o.bones.len());
     let mut inverse_bind_matrices_vec = Vec::with_capacity(o.bones.len());
-    let mut bone_base_transform = Vec::with_capacity(o.bones.len());
     for (i, b) in o.bones.iter().enumerate() {
         let local_mat = match b.parent {
             None => bone_mats[i],
@@ -434,22 +528,6 @@ fn main() -> io::Result<()> {
         inverse_bind_matrices_vec.push(bone_mats_inv[i]);
 
         let (t, r, s) = decompose_bone_matrix(local_mat);
-        if i == DEBUG_BONE {
-            dbg!(&b.name);
-            dbg!(bone_mats[i]);
-            dbg!(local_mat);
-            dbg!(t);
-            dbg!(r);
-            dbg!(s);
-
-            let (t2, r2, s2) = decompose_bone_matrix(bone_mats[i]);
-            dbg!(t2);
-            dbg!(r2);
-            dbg!(s2);
-        }
-        let (t2, r2, s2) = decompose_bone_matrix(bone_mats[i]);
-        //bone_base_transform.push((t2, r2));
-        bone_base_transform.push((t, r));
 
         let node_idx = gltf.push_node(Node {
             camera: None,
@@ -510,43 +588,49 @@ fn main() -> io::Result<()> {
         extras: Default::default(),
     });
 
+    // Meshes
 
     let mut model_nodes = Vec::with_capacity(o.models.len());
     for m in &o.models {
         let mut attributes = HashMap::new();
-        let pos_vec = m.verts.iter().map(|v| v.pos).collect::<Vec<_>>();
+
+        let pos_vec = m.tris.iter()
+            .flat_map(|t| t.verts.iter())
+            .map(|&i| m.verts[i].pos)
+            .collect::<Vec<_>>();
         attributes.insert(Checked::Valid(Semantic::Positions),
             gltf.push_prim_accessor(&pos_vec, buffer::Target::ArrayBuffer, false));
 
-        let idx_vec = m.tris.iter()
-            .flat_map(|t| t.verts.iter())
-            .map(|&i| i as u32)
+        let uv_vec = m.tris.iter()
+            .flat_map(|t| t.uvs.iter().cloned())
+            .map(|[u, v]| [u, 1. - v])
             .collect::<Vec<_>>();
-        let idx_acc = gltf.push_prim_accessor(&idx_vec, buffer::Target::ElementArrayBuffer, false);
+        attributes.insert(Checked::Valid(Semantic::TexCoords(0)),
+            gltf.push_prim_accessor(&uv_vec, buffer::Target::ArrayBuffer, false));
 
         // Joints and weights are specified in groups of 4.
-        let joints_vec = m.verts.iter().map(|v| [
-            v.bone_weights[0].bone as u16,
-            v.bone_weights[1].bone as u16,
-            v.bone_weights[2].bone as u16,
-            v.bone_weights[3].bone as u16,
+        let joints_vec = m.tris.iter().flat_map(|t| t.verts.iter()).map(|&i| [
+            m.verts[i].bone_weights[0].bone as u16,
+            m.verts[i].bone_weights[1].bone as u16,
+            m.verts[i].bone_weights[2].bone as u16,
+            m.verts[i].bone_weights[3].bone as u16,
         ]).collect::<Vec<_>>();
         attributes.insert(Checked::Valid(Semantic::Joints(0)),
             gltf.push_prim_accessor(&joints_vec, buffer::Target::ArrayBuffer, false));
 
-        let weights_vec = m.verts.iter().map(|v| [
-            v.bone_weights[0].weight,
-            v.bone_weights[1].weight,
-            v.bone_weights[2].weight,
-            v.bone_weights[3].weight,
+        let weights_vec = m.tris.iter().flat_map(|t| t.verts.iter()).map(|&i| [
+            m.verts[i].bone_weights[0].weight,
+            m.verts[i].bone_weights[1].weight,
+            m.verts[i].bone_weights[2].weight,
+            m.verts[i].bone_weights[3].weight,
         ]).collect::<Vec<_>>();
         attributes.insert(Checked::Valid(Semantic::Weights(0)),
             gltf.push_prim_accessor(&weights_vec, buffer::Target::ArrayBuffer, true));
 
         let prim = Primitive {
-            indices: Some(idx_acc),
             attributes,
-            material: None,
+            indices: None,
+            material: material_idxs.get(&m.material).cloned(),
             mode: Checked::Valid(mesh::Mode::Triangles),
             targets: None,
             extensions: None,
@@ -594,26 +678,11 @@ fn main() -> io::Result<()> {
             let mut channels = Vec::with_capacity(o.bones.len());
             let mut samplers = Vec::with_capacity(o.bones.len());
             for (i, &bone_idx) in bone_nodes.iter().enumerate() {
-                if i == 7 && ar.start == 0 {
-                    dbg!(&anim.frames[0].bones[i]);
-                }
-
                 let mut frame_times = Vec::with_capacity(ar.end - ar.start);
                 let mut pos_vec = Vec::with_capacity(ar.end - ar.start);
                 let mut quat_vec = Vec::with_capacity(ar.end - ar.start);
                 for f in ar.start .. ar.end {
                     let pose_mat = calc_pose_matrix(&anim.frames[f].bones[i]);
-
-                    /*
-                    let mut pose_mat = quat.to_rotation_matrix().matrix()
-                        .insert_row(3, 0.)
-                        .insert_column(3, 0.);
-                    pose_mat[(0, 3)] = pos[0];
-                    pose_mat[(1, 3)] = pos[1];
-                    pose_mat[(2, 3)] = pos[2];
-                    pose_mat[(3, 3)] = 1.;
-                    //dbg!(pose_mat);
-                    */
 
                     let local_pose_mat = match o.bones[i].parent {
                         None => pose_mat,
@@ -625,23 +694,6 @@ fn main() -> io::Result<()> {
                     };
 
                     let (t, r, s) = decompose_bone_matrix(local_pose_mat);
-
-                    if i == DEBUG_BONE && f == DEBUG_FRAME {
-                        dbg!(pose_mat);
-                        dbg!(local_pose_mat);
-                        dbg!(t);
-                        dbg!(r);
-                        dbg!(s);
-                    }
-
-                    /*
-                    let (pos, quat) = if let Some(parent) = o.bones[i].parent {
-                        let (parent_pos, parent_quat) = bone_base_transform[parent];
-                        (pos - parent_pos, quat.rotation_to(&parent_quat))
-                    } else {
-                        (pos, quat)
-                    };
-                    */
 
                     frame_times.push((f - ar.start) as f32 / ar.frame_rate as f32);
                     pos_vec.push([
@@ -672,7 +724,6 @@ fn main() -> io::Result<()> {
                     extensions: None,
                     extras: Default::default(),
                 });
-                let [w, x, y, z] = anim.frames[0].bones[i].quat;
                 samplers.push(animation::Sampler {
                     input: frame_times_acc,
                     output: gltf.push_prim_accessor(

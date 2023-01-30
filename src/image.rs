@@ -50,4 +50,10 @@ impl Image {
         writer.write_image_data(self.bytes())?;
         Ok(())
     }
+
+    pub fn to_png_vec(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        self.write_png(&mut out).unwrap();
+        out
+    }
 }
