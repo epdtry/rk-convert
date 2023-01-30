@@ -4,14 +4,15 @@ use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io;
 use std::path::Path;
-use gltf_json::{Root, Index, Node, Mesh, Scene, Accessor, Buffer, Skin};
+use gltf_json::{Root, Index, Node, Mesh, Scene, Accessor, Buffer, Skin, Animation};
 use gltf_json::accessor::{self, ComponentType, GenericComponentType};
+use gltf_json::animation;
 use gltf_json::buffer::{self, View};
 use gltf_json::mesh::{self, Primitive, Semantic};
 use gltf_json::scene;
 use gltf_json::validation::Checked;
 use nalgebra::{Vector3, Vector4, Matrix3, Matrix4, Rotation, Quaternion, UnitQuaternion};
-use rkengine::anim::AnimFile;
+use rkengine::anim::{AnimFile, BonePose};
 use rkengine::anim_extra::{self, AnimRange};
 use rkengine::model::ModelFile;
 use rkengine::pvr::PvrFile;
@@ -75,6 +76,12 @@ impl GltfBuilder {
     pub fn push_skin(&mut self, skin: Skin) -> Index<Skin> {
         let i = Index::new(self.root.skins.len() as u32);
         self.root.skins.push(skin);
+        i
+    }
+
+    pub fn push_animation(&mut self, animation: Animation) -> Index<Animation> {
+        let i = Index::new(self.root.animations.len() as u32);
+        self.root.animations.push(animation);
         i
     }
 
@@ -310,13 +317,22 @@ fn decompose_bone_matrix(m: Matrix4<f32>) -> (Vector3<f32>, UnitQuaternion<f32>,
 
     let mat3: Matrix3<f32> = m.remove_row(3).remove_column(3);
 
-    let rotate = UnitQuaternion::from_matrix(&mat3);
+    let rotate = UnitQuaternion::from(Rotation::from_matrix_unchecked(mat3));
 
     let rotate_inv_mat = rotate.inverse().to_rotation_matrix();
     let scale_mat = mat3 * rotate_inv_mat;
     let scale = scale_mat.diagonal();
 
     (translate, rotate, scale)
+}
+
+fn calc_pose_matrix(pose: &BonePose) -> Matrix4<f32> {
+    let [a, b, c, d] = pose.quat;
+    let quat = UnitQuaternion::from_quaternion(Quaternion::new(a, b, c, d));
+    let [x, y, z] = pose.pos;
+    let pose_mat = Matrix4::new_translation(&Vector3::new(x, y, z)) *
+        Matrix4::from(quat);
+    pose_mat
 }
 
 
@@ -393,6 +409,11 @@ fn main() -> io::Result<()> {
 
     let mut gltf = GltfBuilder::default();
 
+    // Model
+
+    const DEBUG_BONE: usize = 7;
+    const DEBUG_FRAME: usize = 10;
+
     let mut bone_mats = Vec::with_capacity(o.bones.len());
     let mut bone_mats_inv = Vec::with_capacity(o.bones.len());
     for b in &o.bones {
@@ -403,6 +424,7 @@ fn main() -> io::Result<()> {
 
     let mut bone_nodes = Vec::with_capacity(o.bones.len());
     let mut inverse_bind_matrices_vec = Vec::with_capacity(o.bones.len());
+    let mut bone_base_transform = Vec::with_capacity(o.bones.len());
     for (i, b) in o.bones.iter().enumerate() {
         let local_mat = match b.parent {
             None => bone_mats[i],
@@ -412,6 +434,22 @@ fn main() -> io::Result<()> {
         inverse_bind_matrices_vec.push(bone_mats_inv[i]);
 
         let (t, r, s) = decompose_bone_matrix(local_mat);
+        if i == DEBUG_BONE {
+            dbg!(&b.name);
+            dbg!(bone_mats[i]);
+            dbg!(local_mat);
+            dbg!(t);
+            dbg!(r);
+            dbg!(s);
+
+            let (t2, r2, s2) = decompose_bone_matrix(bone_mats[i]);
+            dbg!(t2);
+            dbg!(r2);
+            dbg!(s2);
+        }
+        let (t2, r2, s2) = decompose_bone_matrix(bone_mats[i]);
+        //bone_base_transform.push((t2, r2));
+        bone_base_transform.push((t, r));
 
         let node_idx = gltf.push_node(Node {
             camera: None,
@@ -464,7 +502,7 @@ fn main() -> io::Result<()> {
     let inverse_bind_matrices_acc = gltf.push_prim_accessor(
         &inverse_bind_matrices_vec, buffer::Target::ArrayBuffer, false);
     let skin_idx = gltf.push_skin(Skin {
-        joints: bone_nodes,
+        joints: bone_nodes.clone(),
         skeleton: Some(bone_root_idx),
         inverse_bind_matrices: Some(inverse_bind_matrices_acc),
         name: None,
@@ -542,12 +580,139 @@ fn main() -> io::Result<()> {
     }
 
     let scene_idx = gltf.push_scene(Scene {
-        nodes: model_nodes,
+        nodes: model_nodes.clone(),
         name: None,
         extensions: None,
         extras: Default::default(),
     });
     gltf.set_default_scene(scene_idx);
+
+    // Animations
+
+    if let Some(anim) = anim {
+        for ar in &anim_ranges {
+            let mut channels = Vec::with_capacity(o.bones.len());
+            let mut samplers = Vec::with_capacity(o.bones.len());
+            for (i, &bone_idx) in bone_nodes.iter().enumerate() {
+                if i == 7 && ar.start == 0 {
+                    dbg!(&anim.frames[0].bones[i]);
+                }
+
+                let mut frame_times = Vec::with_capacity(ar.end - ar.start);
+                let mut pos_vec = Vec::with_capacity(ar.end - ar.start);
+                let mut quat_vec = Vec::with_capacity(ar.end - ar.start);
+                for f in ar.start .. ar.end {
+                    let pose_mat = calc_pose_matrix(&anim.frames[f].bones[i]);
+
+                    /*
+                    let mut pose_mat = quat.to_rotation_matrix().matrix()
+                        .insert_row(3, 0.)
+                        .insert_column(3, 0.);
+                    pose_mat[(0, 3)] = pos[0];
+                    pose_mat[(1, 3)] = pos[1];
+                    pose_mat[(2, 3)] = pos[2];
+                    pose_mat[(3, 3)] = 1.;
+                    //dbg!(pose_mat);
+                    */
+
+                    let local_pose_mat = match o.bones[i].parent {
+                        None => pose_mat,
+                        Some(j) => {
+                            let parent_pose_mat = calc_pose_matrix(&anim.frames[f].bones[j]);
+                            let parent_pose_mat_inv = parent_pose_mat.try_inverse().unwrap();
+                            parent_pose_mat_inv * pose_mat
+                        },
+                    };
+
+                    let (t, r, s) = decompose_bone_matrix(local_pose_mat);
+
+                    if i == DEBUG_BONE && f == DEBUG_FRAME {
+                        dbg!(pose_mat);
+                        dbg!(local_pose_mat);
+                        dbg!(t);
+                        dbg!(r);
+                        dbg!(s);
+                    }
+
+                    /*
+                    let (pos, quat) = if let Some(parent) = o.bones[i].parent {
+                        let (parent_pos, parent_quat) = bone_base_transform[parent];
+                        (pos - parent_pos, quat.rotation_to(&parent_quat))
+                    } else {
+                        (pos, quat)
+                    };
+                    */
+
+                    frame_times.push((f - ar.start) as f32 / ar.frame_rate as f32);
+                    pos_vec.push([
+                        t[0],
+                        t[1],
+                        t[2],
+                    ]);
+                    quat_vec.push([
+                        r.quaternion().vector()[0],
+                        r.quaternion().vector()[1],
+                        r.quaternion().vector()[2],
+                        r.quaternion().scalar(),
+                    ]);
+                }
+
+                let frame_times_acc = gltf.push_prim_accessor(
+                    &frame_times, buffer::Target::ArrayBuffer, false);
+
+                // Rotation
+                channels.push(animation::Channel {
+                    sampler: Index::new(samplers.len() as u32),
+                    target: animation::Target {
+                        node: bone_idx,
+                        path: Checked::Valid(animation::Property::Rotation),
+                        extensions: None,
+                        extras: Default::default(),
+                    },
+                    extensions: None,
+                    extras: Default::default(),
+                });
+                let [w, x, y, z] = anim.frames[0].bones[i].quat;
+                samplers.push(animation::Sampler {
+                    input: frame_times_acc,
+                    output: gltf.push_prim_accessor(
+                               &quat_vec, buffer::Target::ArrayBuffer, false),
+                    interpolation: Checked::Valid(animation::Interpolation::Step),
+                    extensions: None,
+                    extras: Default::default(),
+                });
+
+                // Position
+                channels.push(animation::Channel {
+                    sampler: Index::new(samplers.len() as u32),
+                    target: animation::Target {
+                        node: bone_idx,
+                        path: Checked::Valid(animation::Property::Translation),
+                        extensions: None,
+                        extras: Default::default(),
+                    },
+                    extensions: None,
+                    extras: Default::default(),
+                });
+                samplers.push(animation::Sampler {
+                    input: frame_times_acc,
+                    output: gltf.push_prim_accessor(
+                               &pos_vec, buffer::Target::ArrayBuffer, false),
+                    interpolation: Checked::Valid(animation::Interpolation::Step),
+                    extensions: None,
+                    extras: Default::default(),
+                });
+            }
+
+            gltf.push_animation(Animation {
+                channels,
+                samplers,
+                name: Some(ar.name.clone()),
+                extensions: None,
+                extras: Default::default(),
+            });
+        }
+    }
 
 
     // Write output
