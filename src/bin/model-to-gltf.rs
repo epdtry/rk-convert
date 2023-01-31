@@ -24,6 +24,7 @@ use png;
 use rkengine::anim::{AnimFile, BonePose};
 use rkengine::anim_extra::{self, AnimRange};
 use rkengine::model::ModelFile;
+use rkengine::modify;
 use rkengine::pvr::PvrFile;
 
 
@@ -390,6 +391,8 @@ fn main() -> io::Result<()> {
     eprintln!("load object from {}", model_path.display());
     let mut mf = ModelFile::new(File::open(model_path)?);
     let mut o = mf.read_object()?;
+
+    modify::flip_normals(&mut o);
 
     eprintln!("bones:");
     for b in &o.bones {
