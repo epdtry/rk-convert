@@ -138,7 +138,7 @@ impl GltfBuilder {
     pub fn push_bin_view(
         &mut self,
         data: &[u8],
-        target: buffer::Target,
+        target: Option<buffer::Target>,
     ) -> Index<View> {
         let offset = self.bin.len();
         self.bin.extend_from_slice(data);
@@ -153,7 +153,7 @@ impl GltfBuilder {
             byte_length: data.len() as u32,
             byte_offset: Some(offset as u32),
             byte_stride: None,
-            target: Some(Checked::Valid(target)),
+            target: target.map(Checked::Valid),
             name: None,
             extensions: None,
             extras: Default::default(),
@@ -163,7 +163,7 @@ impl GltfBuilder {
     pub fn push_prim_accessor<T: PrimType>(
         &mut self,
         data: &[T],
-        buffer_target: buffer::Target,
+        buffer_target: Option<buffer::Target>,
         normalized: bool,
     ) -> Index<Accessor> {
         let byte_len = data.len() * T::SIZE;
@@ -183,7 +183,7 @@ impl GltfBuilder {
             byte_length: byte_len as u32,
             byte_offset: Some(offset as u32),
             byte_stride: None,
-            target: Some(Checked::Valid(buffer_target)),
+            target: buffer_target.map(Checked::Valid),
             name: None,
             extensions: None,
             extras: Default::default(),
@@ -467,7 +467,7 @@ fn main() -> io::Result<()> {
     for name in keys {
         let img = material_images.get(name).unwrap();
         let png_bytes = img.to_png_vec();
-        let view_idx = gltf.push_bin_view(&png_bytes, buffer::Target::ArrayBuffer);
+        let view_idx = gltf.push_bin_view(&png_bytes, None);
 
         let image_idx = gltf.push_image(Image {
             buffer_view: Some(view_idx),
@@ -590,7 +590,7 @@ fn main() -> io::Result<()> {
         extras: Default::default(),
     });
     let inverse_bind_matrices_acc = gltf.push_prim_accessor(
-        &inverse_bind_matrices_vec, buffer::Target::ArrayBuffer, false);
+        &inverse_bind_matrices_vec, None, false);
     let skin_idx = gltf.push_skin(Skin {
         joints: bone_nodes.clone(),
         skeleton: Some(bone_root_idx),
@@ -611,14 +611,14 @@ fn main() -> io::Result<()> {
             .map(|&i| m.verts[i].pos)
             .collect::<Vec<_>>();
         attributes.insert(Checked::Valid(Semantic::Positions),
-            gltf.push_prim_accessor(&pos_vec, buffer::Target::ArrayBuffer, false));
+            gltf.push_prim_accessor(&pos_vec, Some(buffer::Target::ArrayBuffer), false));
 
         let uv_vec = m.tris.iter()
             .flat_map(|t| t.uvs.iter().cloned())
             .map(|[u, v]| [u, 1. - v])
             .collect::<Vec<_>>();
         attributes.insert(Checked::Valid(Semantic::TexCoords(0)),
-            gltf.push_prim_accessor(&uv_vec, buffer::Target::ArrayBuffer, false));
+            gltf.push_prim_accessor(&uv_vec, Some(buffer::Target::ArrayBuffer), false));
 
         // Joints and weights are specified in groups of 4.
         let joints_vec = m.tris.iter().flat_map(|t| t.verts.iter()).map(|&i| [
@@ -628,7 +628,7 @@ fn main() -> io::Result<()> {
             m.verts[i].bone_weights[3].bone as u16,
         ]).collect::<Vec<_>>();
         attributes.insert(Checked::Valid(Semantic::Joints(0)),
-            gltf.push_prim_accessor(&joints_vec, buffer::Target::ArrayBuffer, false));
+            gltf.push_prim_accessor(&joints_vec, Some(buffer::Target::ArrayBuffer), false));
 
         let weights_vec = m.tris.iter().flat_map(|t| t.verts.iter()).map(|&i| [
             m.verts[i].bone_weights[0].weight,
@@ -637,7 +637,7 @@ fn main() -> io::Result<()> {
             m.verts[i].bone_weights[3].weight,
         ]).collect::<Vec<_>>();
         attributes.insert(Checked::Valid(Semantic::Weights(0)),
-            gltf.push_prim_accessor(&weights_vec, buffer::Target::ArrayBuffer, true));
+            gltf.push_prim_accessor(&weights_vec, Some(buffer::Target::ArrayBuffer), true));
 
         let prim = Primitive {
             attributes,
@@ -722,7 +722,7 @@ fn main() -> io::Result<()> {
                 }
 
                 let frame_times_acc = gltf.push_prim_accessor(
-                    &frame_times, buffer::Target::ArrayBuffer, false);
+                    &frame_times, None, false);
 
                 // Rotation
                 channels.push(animation::Channel {
@@ -739,7 +739,7 @@ fn main() -> io::Result<()> {
                 samplers.push(animation::Sampler {
                     input: frame_times_acc,
                     output: gltf.push_prim_accessor(
-                               &quat_vec, buffer::Target::ArrayBuffer, false),
+                               &quat_vec, None, false),
                     interpolation: Checked::Valid(animation::Interpolation::Step),
                     extensions: None,
                     extras: Default::default(),
@@ -760,7 +760,7 @@ fn main() -> io::Result<()> {
                 samplers.push(animation::Sampler {
                     input: frame_times_acc,
                     output: gltf.push_prim_accessor(
-                               &pos_vec, buffer::Target::ArrayBuffer, false),
+                               &pos_vec, None, false),
                     interpolation: Checked::Valid(animation::Interpolation::Step),
                     extensions: None,
                     extras: Default::default(),
