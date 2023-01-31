@@ -123,6 +123,14 @@ impl GltfBuilder {
     }
 
 
+    pub fn add_extension(&mut self, name: String, required: bool) {
+        if required {
+            self.root.extensions_required.push(name.clone());
+        }
+        self.root.extensions_used.push(name);
+    }
+
+
     pub fn set_default_scene(&mut self, scene_idx: Index<Scene>) {
         self.root.scene = Some(scene_idx);
     }
@@ -449,6 +457,7 @@ fn main() -> io::Result<()> {
     // Build GLTF
 
     let mut gltf = GltfBuilder::default();
+    gltf.add_extension("KHR_materials_unlit".into(), true);
 
     // Materials
 
