@@ -772,12 +772,9 @@ fn main() -> io::Result<()> {
     // Write output
 
     let gltf_bytes = gltf.finish();
-	let mut file_stem = model_path.file_stem();
-	let mut file_stem = file_stem.unwrap();
-	let fileName = format!("{}{}", file_stem.to_str().unwrap(), ".glb");
-
-    fs::write(fileName.clone(), gltf_bytes)?;
-	println!("Output Filename: {}", fileName);
+    let file_name = model_path.with_extension("glb");
+    fs::write(&file_name, gltf_bytes)?;
+    println!("Output Filename: {}", file_name.display());
 
 
 
