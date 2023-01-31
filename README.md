@@ -6,7 +6,13 @@ Also includes a tool for extracting .ark files.
 Requires [Rust](https://rustup.rs/) and a C++ compiler (for use with
 [`cc`](https://lib.rs/crates/cc)).
 
-To build:
+First, initialize the submodules:
+
+```sh
+git submodule update --init
+```
+
+Then, to build the tools:
 
 ```sh
 cargo build --release
