@@ -1,3 +1,4 @@
+use std::cmp;
 use std::collections::HashMap;
 use std::env;
 use std::ffi::OsStr;
@@ -160,7 +161,7 @@ impl GltfBuilder {
         })
     }
 
-    pub fn push_prim_accessor<T: PrimType>(
+    pub fn push_prim_accessor<T: PrimType + std::fmt::Debug>(
         &mut self,
         data: &[T],
         buffer_target: Option<buffer::Target>,
@@ -170,8 +171,18 @@ impl GltfBuilder {
 
         let offset = self.bin.len();
         self.bin.reserve(byte_len);
+        let mut min: Option<T> = None;
+        let mut max: Option<T> = None;
         for &x in data {
             x.push_bytes(&mut self.bin);
+            min = Some(match min {
+                Some(old) => old.componentwise_min(x),
+                None => x,
+            });
+            max = Some(match max {
+                Some(old) => old.componentwise_max(x),
+                None => x,
+            });
         }
         assert_eq!(self.bin.len() - offset, byte_len);
         while self.bin.len() % 4 != 0 {
@@ -194,8 +205,8 @@ impl GltfBuilder {
             count: data.len() as u32,
             component_type: Checked::Valid(T::COMPONENT_TYPE),
             type_: Checked::Valid(T::TYPE),
-            min: None,
-            max: None,
+            min: min.map(|x| x.to_min_max_value()),
+            max: max.map(|x| x.to_min_max_value()),
             normalized,
             sparse: None,
             name: None,
@@ -255,6 +266,9 @@ pub trait PrimType: Copy {
     const TYPE: accessor::Type;
     const SIZE: usize;
     fn push_bytes(self, v: &mut Vec<u8>);
+    fn componentwise_min(self, other: Self) -> Self;
+    fn componentwise_max(self, other: Self) -> Self;
+    fn to_min_max_value(self) -> gltf_json::Value;
 }
 
 impl PrimType for f32 {
@@ -264,6 +278,13 @@ impl PrimType for f32 {
     fn push_bytes(self, v: &mut Vec<u8>) {
         v.extend_from_slice(&self.to_le_bytes());
     }
+    fn componentwise_min(self, other: Self) -> Self {
+        if other < self { other } else { self }
+    }
+    fn componentwise_max(self, other: Self) -> Self {
+        if other > self { other } else { self }
+    }
+    fn to_min_max_value(self) -> gltf_json::Value { (&[self] as &[_]).into() }
 }
 
 fn iter_column_major(m: Matrix4<f32>) -> impl Iterator<Item = f32> {
@@ -291,6 +312,13 @@ impl PrimType for Matrix4<f32> {
             x.push_bytes(v);
         }
     }
+    fn componentwise_min(self, other: Self) -> Self {
+        self.zip_map(&other, |x, y| if y < x { y } else { x })
+    }
+    fn componentwise_max(self, other: Self) -> Self {
+        self.zip_map(&other, |x, y| if y > x { y } else { x })
+    }
+    fn to_min_max_value(self) -> gltf_json::Value { (&to_column_major(self) as &[_]).into() }
 }
 
 impl<T: PrimType> PrimType for [T; 2] {
@@ -301,6 +329,28 @@ impl<T: PrimType> PrimType for [T; 2] {
         for &x in &self {
             x.push_bytes(v);
         }
+    }
+    fn componentwise_min(self, other: Self) -> Self {
+        [
+            self[0].componentwise_min(other[0]),
+            self[1].componentwise_min(other[1]),
+        ]
+    }
+    fn componentwise_max(self, other: Self) -> Self {
+        [
+            self[0].componentwise_max(other[0]),
+            self[1].componentwise_max(other[1]),
+        ]
+    }
+    fn to_min_max_value(self) -> gltf_json::Value {
+        let mut v = Vec::new();
+        for x in &self {
+            let x_arr = x.to_min_max_value();
+            for y in x_arr.as_array().unwrap().iter() {
+                v.push(y.clone());
+            }
+        }
+        v.into()
     }
 }
 
@@ -313,6 +363,30 @@ impl<T: PrimType> PrimType for [T; 3] {
             x.push_bytes(v);
         }
     }
+    fn componentwise_min(self, other: Self) -> Self {
+        [
+            self[0].componentwise_min(other[0]),
+            self[1].componentwise_min(other[1]),
+            self[2].componentwise_min(other[2]),
+        ]
+    }
+    fn componentwise_max(self, other: Self) -> Self {
+        [
+            self[0].componentwise_max(other[0]),
+            self[1].componentwise_max(other[1]),
+            self[2].componentwise_max(other[2]),
+        ]
+    }
+    fn to_min_max_value(self) -> gltf_json::Value {
+        let mut v = Vec::new();
+        for x in &self {
+            let x_arr = x.to_min_max_value();
+            for y in x_arr.as_array().unwrap().iter() {
+                v.push(y.clone());
+            }
+        }
+        v.into()
+    }
 }
 
 impl<T: PrimType> PrimType for [T; 4] {
@@ -324,20 +398,33 @@ impl<T: PrimType> PrimType for [T; 4] {
             x.push_bytes(v);
         }
     }
-}
-
-/*
-impl<T: PrimType> PrimType for [T; 16] {
-    const COMPONENT_TYPE: GenericComponentType = T::COMPONENT_TYPE;
-    const TYPE: accessor::Type = accessor::Type::Mat4;
-    const SIZE: usize = T::SIZE * 16;
-    fn push_bytes(self, v: &mut Vec<u8>) {
-        for &x in &self {
-            x.push_bytes(v);
+    fn componentwise_min(self, other: Self) -> Self {
+        [
+            self[0].componentwise_min(other[0]),
+            self[1].componentwise_min(other[1]),
+            self[2].componentwise_min(other[2]),
+            self[3].componentwise_min(other[3]),
+        ]
+    }
+    fn componentwise_max(self, other: Self) -> Self {
+        [
+            self[0].componentwise_max(other[0]),
+            self[1].componentwise_max(other[1]),
+            self[2].componentwise_max(other[2]),
+            self[3].componentwise_max(other[3]),
+        ]
+    }
+    fn to_min_max_value(self) -> gltf_json::Value {
+        let mut v = Vec::new();
+        for x in &self {
+            let x_arr = x.to_min_max_value();
+            for y in x_arr.as_array().unwrap().iter() {
+                v.push(y.clone());
+            }
         }
+        v.into()
     }
 }
-*/
 
 impl PrimType for u16 {
     const COMPONENT_TYPE: GenericComponentType = GenericComponentType(ComponentType::U16);
@@ -346,6 +433,9 @@ impl PrimType for u16 {
     fn push_bytes(self, v: &mut Vec<u8>) {
         v.extend_from_slice(&self.to_le_bytes());
     }
+    fn componentwise_min(self, other: Self) -> Self { cmp::min(self, other) }
+    fn componentwise_max(self, other: Self) -> Self { cmp::max(self, other) }
+    fn to_min_max_value(self) -> gltf_json::Value { (&[self] as &[_]).into() }
 }
 
 impl PrimType for u32 {
@@ -355,6 +445,9 @@ impl PrimType for u32 {
     fn push_bytes(self, v: &mut Vec<u8>) {
         v.extend_from_slice(&self.to_le_bytes());
     }
+    fn componentwise_min(self, other: Self) -> Self { cmp::min(self, other) }
+    fn componentwise_max(self, other: Self) -> Self { cmp::max(self, other) }
+    fn to_min_max_value(self) -> gltf_json::Value { (&[self] as &[_]).into() }
 }
 
 
