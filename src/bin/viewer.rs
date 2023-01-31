@@ -10,10 +10,10 @@ use std::ptr;
 use std::time::Instant;
 use gl::types::{GLenum, GLint, GLuint, GLsizei, GLvoid};
 use nalgebra::{Vector3, Vector4, Matrix4, Quaternion, UnitQuaternion};
-use rkengine::anim::AnimFile;
-use rkengine::anim_extra::{self, AnimRange};
-use rkengine::model::ModelFile;
-use rkengine::pvr::PvrFile;
+use rk_convert::anim::AnimFile;
+use rk_convert::anim_extra::{self, AnimRange};
+use rk_convert::model::ModelFile;
+use rk_convert::pvr::PvrFile;
 
 
 const VERTEX_SHADER_SOURCE: &str = r"

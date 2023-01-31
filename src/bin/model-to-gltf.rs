@@ -21,11 +21,11 @@ use gltf_json::texture;
 use gltf_json::validation::Checked;
 use nalgebra::{Vector3, Vector4, Matrix3, Matrix4, Rotation, Quaternion, UnitQuaternion};
 use png;
-use rkengine::anim::{AnimFile, BonePose};
-use rkengine::anim_extra::{self, AnimRange};
-use rkengine::model::ModelFile;
-use rkengine::modify;
-use rkengine::pvr::PvrFile;
+use rk_convert::anim::{AnimFile, BonePose};
+use rk_convert::anim_extra::{self, AnimRange};
+use rk_convert::model::ModelFile;
+use rk_convert::modify;
+use rk_convert::pvr::PvrFile;
 
 
 pub struct GltfBuilder {

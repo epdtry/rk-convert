@@ -2,7 +2,7 @@ use std::env;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use rkengine::ark::ArkFile;
+use rk_convert::ark::ArkFile;
 
 fn io_main() -> io::Result<()> {
     let args = env::args_os().collect::<Vec<_>>();

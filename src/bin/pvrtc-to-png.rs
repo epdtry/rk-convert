@@ -2,7 +2,7 @@ use std::env;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use rkengine::pvr::PvrFile;
+use rk_convert::pvr::PvrFile;
 
 fn io_main() -> io::Result<()> {
     let args = env::args_os().collect::<Vec<_>>();

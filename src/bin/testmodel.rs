@@ -2,7 +2,7 @@ use std::env;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use rkengine::model::{ModelFile, Bone};
+use rk_convert::model::{ModelFile, Bone};
 
 fn io_main() -> io::Result<()> {
     let args = env::args_os().collect::<Vec<_>>();
