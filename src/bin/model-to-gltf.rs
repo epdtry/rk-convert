@@ -1,3 +1,4 @@
+use std::cmp;
 use std::collections::HashMap;
 use std::env;
 use std::ffi::OsStr;
@@ -123,6 +124,14 @@ impl GltfBuilder {
     }
 
 
+    pub fn add_extension(&mut self, name: String, required: bool) {
+        if required {
+            self.root.extensions_required.push(name.clone());
+        }
+        self.root.extensions_used.push(name);
+    }
+
+
     pub fn set_default_scene(&mut self, scene_idx: Index<Scene>) {
         self.root.scene = Some(scene_idx);
     }
@@ -130,7 +139,7 @@ impl GltfBuilder {
     pub fn push_bin_view(
         &mut self,
         data: &[u8],
-        target: buffer::Target,
+        target: Option<buffer::Target>,
     ) -> Index<View> {
         let offset = self.bin.len();
         self.bin.extend_from_slice(data);
@@ -145,25 +154,35 @@ impl GltfBuilder {
             byte_length: data.len() as u32,
             byte_offset: Some(offset as u32),
             byte_stride: None,
-            target: Some(Checked::Valid(target)),
+            target: target.map(Checked::Valid),
             name: None,
             extensions: None,
             extras: Default::default(),
         })
     }
 
-    pub fn push_prim_accessor<T: PrimType>(
+    pub fn push_prim_accessor<T: PrimType + std::fmt::Debug>(
         &mut self,
         data: &[T],
-        buffer_target: buffer::Target,
+        buffer_target: Option<buffer::Target>,
         normalized: bool,
     ) -> Index<Accessor> {
         let byte_len = data.len() * T::SIZE;
 
         let offset = self.bin.len();
         self.bin.reserve(byte_len);
+        let mut min: Option<T> = None;
+        let mut max: Option<T> = None;
         for &x in data {
             x.push_bytes(&mut self.bin);
+            min = Some(match min {
+                Some(old) => old.componentwise_min(x),
+                None => x,
+            });
+            max = Some(match max {
+                Some(old) => old.componentwise_max(x),
+                None => x,
+            });
         }
         assert_eq!(self.bin.len() - offset, byte_len);
         while self.bin.len() % 4 != 0 {
@@ -175,7 +194,7 @@ impl GltfBuilder {
             byte_length: byte_len as u32,
             byte_offset: Some(offset as u32),
             byte_stride: None,
-            target: Some(Checked::Valid(buffer_target)),
+            target: buffer_target.map(Checked::Valid),
             name: None,
             extensions: None,
             extras: Default::default(),
@@ -186,8 +205,8 @@ impl GltfBuilder {
             count: data.len() as u32,
             component_type: Checked::Valid(T::COMPONENT_TYPE),
             type_: Checked::Valid(T::TYPE),
-            min: None,
-            max: None,
+            min: min.map(|x| x.to_min_max_value()),
+            max: max.map(|x| x.to_min_max_value()),
             normalized,
             sparse: None,
             name: None,
@@ -247,6 +266,9 @@ pub trait PrimType: Copy {
     const TYPE: accessor::Type;
     const SIZE: usize;
     fn push_bytes(self, v: &mut Vec<u8>);
+    fn componentwise_min(self, other: Self) -> Self;
+    fn componentwise_max(self, other: Self) -> Self;
+    fn to_min_max_value(self) -> gltf_json::Value;
 }
 
 impl PrimType for f32 {
@@ -256,6 +278,13 @@ impl PrimType for f32 {
     fn push_bytes(self, v: &mut Vec<u8>) {
         v.extend_from_slice(&self.to_le_bytes());
     }
+    fn componentwise_min(self, other: Self) -> Self {
+        if other < self { other } else { self }
+    }
+    fn componentwise_max(self, other: Self) -> Self {
+        if other > self { other } else { self }
+    }
+    fn to_min_max_value(self) -> gltf_json::Value { (&[self] as &[_]).into() }
 }
 
 fn iter_column_major(m: Matrix4<f32>) -> impl Iterator<Item = f32> {
@@ -283,6 +312,13 @@ impl PrimType for Matrix4<f32> {
             x.push_bytes(v);
         }
     }
+    fn componentwise_min(self, other: Self) -> Self {
+        self.zip_map(&other, |x, y| if y < x { y } else { x })
+    }
+    fn componentwise_max(self, other: Self) -> Self {
+        self.zip_map(&other, |x, y| if y > x { y } else { x })
+    }
+    fn to_min_max_value(self) -> gltf_json::Value { (&to_column_major(self) as &[_]).into() }
 }
 
 impl<T: PrimType> PrimType for [T; 2] {
@@ -293,6 +329,28 @@ impl<T: PrimType> PrimType for [T; 2] {
         for &x in &self {
             x.push_bytes(v);
         }
+    }
+    fn componentwise_min(self, other: Self) -> Self {
+        [
+            self[0].componentwise_min(other[0]),
+            self[1].componentwise_min(other[1]),
+        ]
+    }
+    fn componentwise_max(self, other: Self) -> Self {
+        [
+            self[0].componentwise_max(other[0]),
+            self[1].componentwise_max(other[1]),
+        ]
+    }
+    fn to_min_max_value(self) -> gltf_json::Value {
+        let mut v = Vec::new();
+        for x in &self {
+            let x_arr = x.to_min_max_value();
+            for y in x_arr.as_array().unwrap().iter() {
+                v.push(y.clone());
+            }
+        }
+        v.into()
     }
 }
 
@@ -305,6 +363,30 @@ impl<T: PrimType> PrimType for [T; 3] {
             x.push_bytes(v);
         }
     }
+    fn componentwise_min(self, other: Self) -> Self {
+        [
+            self[0].componentwise_min(other[0]),
+            self[1].componentwise_min(other[1]),
+            self[2].componentwise_min(other[2]),
+        ]
+    }
+    fn componentwise_max(self, other: Self) -> Self {
+        [
+            self[0].componentwise_max(other[0]),
+            self[1].componentwise_max(other[1]),
+            self[2].componentwise_max(other[2]),
+        ]
+    }
+    fn to_min_max_value(self) -> gltf_json::Value {
+        let mut v = Vec::new();
+        for x in &self {
+            let x_arr = x.to_min_max_value();
+            for y in x_arr.as_array().unwrap().iter() {
+                v.push(y.clone());
+            }
+        }
+        v.into()
+    }
 }
 
 impl<T: PrimType> PrimType for [T; 4] {
@@ -316,20 +398,33 @@ impl<T: PrimType> PrimType for [T; 4] {
             x.push_bytes(v);
         }
     }
-}
-
-/*
-impl<T: PrimType> PrimType for [T; 16] {
-    const COMPONENT_TYPE: GenericComponentType = T::COMPONENT_TYPE;
-    const TYPE: accessor::Type = accessor::Type::Mat4;
-    const SIZE: usize = T::SIZE * 16;
-    fn push_bytes(self, v: &mut Vec<u8>) {
-        for &x in &self {
-            x.push_bytes(v);
+    fn componentwise_min(self, other: Self) -> Self {
+        [
+            self[0].componentwise_min(other[0]),
+            self[1].componentwise_min(other[1]),
+            self[2].componentwise_min(other[2]),
+            self[3].componentwise_min(other[3]),
+        ]
+    }
+    fn componentwise_max(self, other: Self) -> Self {
+        [
+            self[0].componentwise_max(other[0]),
+            self[1].componentwise_max(other[1]),
+            self[2].componentwise_max(other[2]),
+            self[3].componentwise_max(other[3]),
+        ]
+    }
+    fn to_min_max_value(self) -> gltf_json::Value {
+        let mut v = Vec::new();
+        for x in &self {
+            let x_arr = x.to_min_max_value();
+            for y in x_arr.as_array().unwrap().iter() {
+                v.push(y.clone());
+            }
         }
+        v.into()
     }
 }
-*/
 
 impl PrimType for u16 {
     const COMPONENT_TYPE: GenericComponentType = GenericComponentType(ComponentType::U16);
@@ -338,6 +433,9 @@ impl PrimType for u16 {
     fn push_bytes(self, v: &mut Vec<u8>) {
         v.extend_from_slice(&self.to_le_bytes());
     }
+    fn componentwise_min(self, other: Self) -> Self { cmp::min(self, other) }
+    fn componentwise_max(self, other: Self) -> Self { cmp::max(self, other) }
+    fn to_min_max_value(self) -> gltf_json::Value { (&[self] as &[_]).into() }
 }
 
 impl PrimType for u32 {
@@ -347,6 +445,9 @@ impl PrimType for u32 {
     fn push_bytes(self, v: &mut Vec<u8>) {
         v.extend_from_slice(&self.to_le_bytes());
     }
+    fn componentwise_min(self, other: Self) -> Self { cmp::min(self, other) }
+    fn componentwise_max(self, other: Self) -> Self { cmp::max(self, other) }
+    fn to_min_max_value(self) -> gltf_json::Value { (&[self] as &[_]).into() }
 }
 
 
@@ -449,6 +550,7 @@ fn main() -> io::Result<()> {
     // Build GLTF
 
     let mut gltf = GltfBuilder::default();
+    gltf.add_extension("KHR_materials_unlit".into(), true);
 
     // Materials
 
@@ -458,7 +560,7 @@ fn main() -> io::Result<()> {
     for name in keys {
         let img = material_images.get(name).unwrap();
         let png_bytes = img.to_png_vec();
-        let view_idx = gltf.push_bin_view(&png_bytes, buffer::Target::ArrayBuffer);
+        let view_idx = gltf.push_bin_view(&png_bytes, None);
 
         let image_idx = gltf.push_image(Image {
             buffer_view: Some(view_idx),
@@ -581,7 +683,7 @@ fn main() -> io::Result<()> {
         extras: Default::default(),
     });
     let inverse_bind_matrices_acc = gltf.push_prim_accessor(
-        &inverse_bind_matrices_vec, buffer::Target::ArrayBuffer, false);
+        &inverse_bind_matrices_vec, None, false);
     let skin_idx = gltf.push_skin(Skin {
         joints: bone_nodes.clone(),
         skeleton: Some(bone_root_idx),
@@ -602,14 +704,14 @@ fn main() -> io::Result<()> {
             .map(|&i| m.verts[i].pos)
             .collect::<Vec<_>>();
         attributes.insert(Checked::Valid(Semantic::Positions),
-            gltf.push_prim_accessor(&pos_vec, buffer::Target::ArrayBuffer, false));
+            gltf.push_prim_accessor(&pos_vec, Some(buffer::Target::ArrayBuffer), false));
 
         let uv_vec = m.tris.iter()
             .flat_map(|t| t.uvs.iter().cloned())
             .map(|[u, v]| [u, 1. - v])
             .collect::<Vec<_>>();
         attributes.insert(Checked::Valid(Semantic::TexCoords(0)),
-            gltf.push_prim_accessor(&uv_vec, buffer::Target::ArrayBuffer, false));
+            gltf.push_prim_accessor(&uv_vec, Some(buffer::Target::ArrayBuffer), false));
 
         // Joints and weights are specified in groups of 4.
         let joints_vec = m.tris.iter().flat_map(|t| t.verts.iter()).map(|&i| [
@@ -619,7 +721,7 @@ fn main() -> io::Result<()> {
             m.verts[i].bone_weights[3].bone as u16,
         ]).collect::<Vec<_>>();
         attributes.insert(Checked::Valid(Semantic::Joints(0)),
-            gltf.push_prim_accessor(&joints_vec, buffer::Target::ArrayBuffer, false));
+            gltf.push_prim_accessor(&joints_vec, Some(buffer::Target::ArrayBuffer), false));
 
         let weights_vec = m.tris.iter().flat_map(|t| t.verts.iter()).map(|&i| [
             m.verts[i].bone_weights[0].weight,
@@ -628,7 +730,7 @@ fn main() -> io::Result<()> {
             m.verts[i].bone_weights[3].weight,
         ]).collect::<Vec<_>>();
         attributes.insert(Checked::Valid(Semantic::Weights(0)),
-            gltf.push_prim_accessor(&weights_vec, buffer::Target::ArrayBuffer, true));
+            gltf.push_prim_accessor(&weights_vec, Some(buffer::Target::ArrayBuffer), true));
 
         let prim = Primitive {
             attributes,
@@ -666,8 +768,10 @@ fn main() -> io::Result<()> {
         model_nodes.push(node_idx);
     }
 
+    let mut scene_nodes = model_nodes.clone();
+    scene_nodes.push(bone_root_idx);
     let scene_idx = gltf.push_scene(Scene {
-        nodes: model_nodes.clone(),
+        nodes: scene_nodes,
         name: None,
         extensions: None,
         extras: Default::default(),
@@ -713,7 +817,7 @@ fn main() -> io::Result<()> {
                 }
 
                 let frame_times_acc = gltf.push_prim_accessor(
-                    &frame_times, buffer::Target::ArrayBuffer, false);
+                    &frame_times, None, false);
 
                 // Rotation
                 channels.push(animation::Channel {
@@ -730,7 +834,7 @@ fn main() -> io::Result<()> {
                 samplers.push(animation::Sampler {
                     input: frame_times_acc,
                     output: gltf.push_prim_accessor(
-                               &quat_vec, buffer::Target::ArrayBuffer, false),
+                               &quat_vec, None, false),
                     interpolation: Checked::Valid(animation::Interpolation::Step),
                     extensions: None,
                     extras: Default::default(),
@@ -751,7 +855,7 @@ fn main() -> io::Result<()> {
                 samplers.push(animation::Sampler {
                     input: frame_times_acc,
                     output: gltf.push_prim_accessor(
-                               &pos_vec, buffer::Target::ArrayBuffer, false),
+                               &pos_vec, None, false),
                     interpolation: Checked::Valid(animation::Interpolation::Step),
                     extensions: None,
                     extras: Default::default(),
