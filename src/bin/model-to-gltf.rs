@@ -772,7 +772,10 @@ fn main() -> io::Result<()> {
     // Write output
 
     let gltf_bytes = gltf.finish();
-    fs::write("out.glb", gltf_bytes)?;
+    let file_name = model_path.with_extension("glb");
+    fs::write(&file_name, gltf_bytes)?;
+    println!("Output Filename: {}", file_name.display());
+
 
 
     Ok(())
