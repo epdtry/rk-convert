@@ -675,8 +675,10 @@ fn main() -> io::Result<()> {
         model_nodes.push(node_idx);
     }
 
+    let mut scene_nodes = model_nodes.clone();
+    scene_nodes.push(bone_root_idx);
     let scene_idx = gltf.push_scene(Scene {
-        nodes: model_nodes.clone(),
+        nodes: scene_nodes,
         name: None,
         extensions: None,
         extras: Default::default(),
