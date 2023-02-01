@@ -1,6 +1,7 @@
 use std::cmp;
 use std::collections::HashMap;
 use std::env;
+use std::f32::consts::PI;
 use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io;
@@ -466,13 +467,18 @@ fn decompose_bone_matrix(m: Matrix4<f32>) -> (Vector3<f32>, UnitQuaternion<f32>,
     (translate, rotate, scale)
 }
 
+fn compose_bone_matrix(t: Vector3<f32>, r: UnitQuaternion<f32>, s: Vector3<f32>) -> Matrix4<f32> {
+    Matrix4::new_translation(&t) * Matrix4::from(r) * Matrix4::new_nonuniform_scaling(&s)
+}
+
 fn calc_pose_matrix(pose: &BonePose) -> Matrix4<f32> {
     let [a, b, c, d] = pose.quat;
-    let quat = UnitQuaternion::from_quaternion(Quaternion::new(a, b, c, d));
     let [x, y, z] = pose.pos;
-    let pose_mat = Matrix4::new_translation(&Vector3::new(x, y, z)) *
-        Matrix4::from(quat);
-    pose_mat
+    compose_bone_matrix(
+        Vector3::new(x, y, z),
+        UnitQuaternion::from_quaternion(Quaternion::new(a, b, c, d)),
+        Vector3::new(1., 1., 1.),
+    )
 }
 
 
@@ -493,8 +499,6 @@ fn main() -> io::Result<()> {
     let mut mf = ModelFile::new(File::open(model_path)?);
     let mut o = mf.read_object()?;
 
-    modify::flip_normals(&mut o);
-
     eprintln!("bones:");
     for b in &o.bones {
         if let Some(i) = b.parent {
@@ -505,7 +509,7 @@ fn main() -> io::Result<()> {
     }
 
     // TODO: read anim.xml as well to get subobject visibility info
-    let (anim, anim_ranges) = if let Some(anim_path) = anim_path {
+    let (mut anim, anim_ranges) = if let Some(anim_path) = anim_path {
         if anim_path.extension() == Some(OsStr::new("csv")) {
             let ranges = anim_extra::read_anim_csv(anim_path)?;
             let mut af = AnimFile::new(File::open(anim_path.with_extension("anim"))?);
@@ -544,6 +548,69 @@ fn main() -> io::Result<()> {
         let mut pf = PvrFile::new(File::open(texture_path)?);
         let img = pf.read_image()?;
         material_images.insert(&m.material, img);
+    }
+
+
+    // Flip axes
+    //
+    // The .rk model format seems to use +X right, -Y up, -Z forward for its coordinate system.
+    // glTF instead specifies -X right, +Y up, +Z forward.  We first mirror along the Y axis to
+    // convert to the proper handedness, then rotate 180 around the Y axis to correct the other two
+    // axes.
+
+    fn flip_vector(v: Vector3<f32>) -> Vector3<f32> {
+        Vector3::new(
+            -v[0],
+            -v[1],
+            -v[2],
+        )
+    }
+    fn flip_vector_array(arr: [f32; 3]) -> [f32; 3] {
+        [-arr[0], -arr[1], -arr[2]]
+    }
+    fn flip_quaternion(q: UnitQuaternion<f32>) -> UnitQuaternion<f32> {
+        // Flip Y axis
+        let q = UnitQuaternion::from_quaternion(Quaternion::new(
+            q.scalar(),
+            -q.vector()[0],
+            q.vector()[1],
+            -q.vector()[2],
+        ));
+        // Rotate 180 degrees around Y axis
+        let q = UnitQuaternion::from_euler_angles(0., PI, 0.) * q;
+        q
+    }
+    fn flip_quaternion_array(arr: [f32; 4]) -> [f32; 4] {
+        let [w, i, j, k] = arr;
+        let q = UnitQuaternion::from_quaternion(Quaternion::new(w, i, j, k));
+        let q = flip_quaternion(q);
+        [
+            q.scalar(),
+            q.vector()[0],
+            q.vector()[1],
+            q.vector()[2],
+        ]
+    }
+
+    for m in &mut o.models {
+        for v in &mut m.verts {
+            v.pos = flip_vector_array(v.pos);
+        }
+    }
+    for b in &mut o.bones {
+        let bone_mat = Matrix4::from_column_slice(&b.matrix);
+        let (t, r, s) = decompose_bone_matrix(bone_mat);
+        let t = flip_vector(t);
+        let r = flip_quaternion(r);
+        b.matrix = to_column_major(compose_bone_matrix(t, r, s));
+    }
+    if let Some(anim) = anim.as_mut() {
+        for f in &mut anim.frames {
+            for b in &mut f.bones {
+                b.pos = flip_vector_array(b.pos);
+                b.quat = flip_quaternion_array(b.quat);
+            }
+        }
     }
 
 

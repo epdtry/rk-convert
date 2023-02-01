@@ -15,6 +15,7 @@ pub struct Frame {
 #[derive(Clone, Debug, Default)]
 pub struct BonePose {
     pub pos: [f32; 3],
+    /// `[w, i, j, k]` order, where `w` is the scalar.
     pub quat: [f32; 4],
 }
 
