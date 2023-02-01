@@ -547,7 +547,7 @@ fn main() -> io::Result<()> {
         // TODO: read {name}.rkm and extract DiffuseTexture name
         let mut pf = PvrFile::new(File::open(texture_path)?);
         let img = pf.read_image()?;
-        material_images.insert(&m.material, img);
+        material_images.insert(m.material.clone(), img);
     }
 
 
