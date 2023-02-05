@@ -24,7 +24,7 @@ use gltf_json::validation::Checked;
 use nalgebra::{Vector3, Vector4, Matrix3, Matrix4, Rotation, Quaternion, UnitQuaternion};
 use png;
 use rk_convert::anim::{AnimFile, BonePose};
-use rk_convert::anim_extra::{self, AnimRange};
+use rk_convert::anim_csv::{self, AnimRange};
 use rk_convert::model::ModelFile;
 use rk_convert::modify;
 use rk_convert::pvr::PvrFile;
@@ -511,7 +511,7 @@ fn main() -> io::Result<()> {
     // TODO: read anim.xml as well to get subobject visibility info
     let (mut anim, anim_ranges) = if let Some(anim_path) = anim_path {
         if anim_path.extension() == Some(OsStr::new("csv")) {
-            let ranges = anim_extra::read_anim_csv(anim_path)?;
+            let ranges = anim_csv::read_anim_csv(anim_path)?;
             let mut af = AnimFile::new(File::open(anim_path.with_extension("anim"))?);
             (Some(af.read_anim()?), ranges)
         } else {
