@@ -25,6 +25,7 @@ use nalgebra::{Vector3, Vector4, Matrix3, Matrix4, Rotation, Quaternion, UnitQua
 use png;
 use rk_convert::anim::{AnimFile, BonePose};
 use rk_convert::anim_csv::{self, AnimRange};
+use rk_convert::anim_xml;
 use rk_convert::model::ModelFile;
 use rk_convert::modify;
 use rk_convert::pvr::PvrFile;
@@ -510,10 +511,10 @@ fn main() -> io::Result<()> {
 
     // TODO: read anim.xml as well to get subobject visibility info
     let (mut anim, anim_ranges) = if let Some(anim_path) = anim_path {
-        if anim_path.extension() == Some(OsStr::new("csv")) {
+        let (anim, anim_ranges) = if anim_path.extension() == Some(OsStr::new("csv")) {
             let ranges = anim_csv::read_anim_csv(anim_path)?;
             let mut af = AnimFile::new(File::open(anim_path.with_extension("anim"))?);
-            (Some(af.read_anim()?), ranges)
+            (af.read_anim()?, ranges)
         } else {
             let mut af = AnimFile::new(File::open(anim_path)?);
             let anim = af.read_anim()?;
@@ -523,8 +524,17 @@ fn main() -> io::Result<()> {
                 end: anim.frames.len(),
                 frame_rate: 15,
             }];
-            (Some(anim), ranges)
+            (anim, ranges)
+        };
+
+        let xml_path = anim_path.with_extension("xml");
+        if xml_path.exists() {
+            eprintln!("read anim xml from {:?}", xml_path);
+            let anim_objs = anim_xml::read_anim_xml(xml_path)?;
+            //dbg!(anim_objs);
         }
+
+        (Some(anim), anim_ranges)
     } else {
         (None, Vec::new())
     };
