@@ -1,5 +1,5 @@
 use std::cmp;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::f32::consts::PI;
 use std::ffi::OsStr;
@@ -25,7 +25,7 @@ use nalgebra::{Vector3, Vector4, Matrix3, Matrix4, Rotation, Quaternion, UnitQua
 use png;
 use rk_convert::anim::{AnimFile, BonePose};
 use rk_convert::anim_csv::{self, AnimRange};
-use rk_convert::anim_xml;
+use rk_convert::anim_xml::{self, AnimObjects, EyeMode};
 use rk_convert::model::ModelFile;
 use rk_convert::modify;
 use rk_convert::pvr::PvrFile;
@@ -510,11 +510,20 @@ fn main() -> io::Result<()> {
     }
 
     // TODO: read anim.xml as well to get subobject visibility info
-    let (mut anim, anim_ranges) = if let Some(anim_path) = anim_path {
-        let (anim, anim_ranges) = if anim_path.extension() == Some(OsStr::new("csv")) {
+    let (mut anim, anim_ranges, anim_objs) = if let Some(anim_path) = anim_path {
+        if anim_path.extension() == Some(OsStr::new("csv")) {
             let ranges = anim_csv::read_anim_csv(anim_path)?;
             let mut af = AnimFile::new(File::open(anim_path.with_extension("anim"))?);
-            (af.read_anim()?, ranges)
+
+            let xml_path = anim_path.with_extension("xml");
+            let objs = if xml_path.exists() {
+                eprintln!("read anim xml from {:?}", xml_path);
+                anim_xml::read_anim_xml(xml_path)?
+            } else {
+                AnimObjects::default()
+            };
+
+            (Some(af.read_anim()?), ranges, objs)
         } else {
             let mut af = AnimFile::new(File::open(anim_path)?);
             let anim = af.read_anim()?;
@@ -524,24 +533,11 @@ fn main() -> io::Result<()> {
                 end: anim.frames.len(),
                 frame_rate: 15,
             }];
-            (anim, ranges)
-        };
-
-        let xml_path = anim_path.with_extension("xml");
-        if xml_path.exists() {
-            eprintln!("read anim xml from {:?}", xml_path);
-            let anim_objs = anim_xml::read_anim_xml(xml_path)?;
-            //dbg!(anim_objs);
+            (Some(anim), ranges, AnimObjects::default())
         }
-
-        (Some(anim), anim_ranges)
     } else {
-        (None, Vec::new())
+        (None, Vec::new(), AnimObjects::default())
     };
-
-    // XXX HACK
-    o.models.retain(|m| !m.name.contains("eyes_") || m.name.contains("open"));
-    o.models.retain(|m| m.name != "a_rainbowdash_cloud");
 
     let mut material_images = HashMap::new();
     for m in &o.models {
@@ -624,6 +620,95 @@ fn main() -> io::Result<()> {
     }
 
 
+    // Build maps for processing object animation.
+
+    // Maps "subobject" XML IDs to model index.
+    let mut subobject_map: HashMap<String, usize> = HashMap::new();
+    // Maps eye modes to their corresponding model index.
+    let mut eye_map: HashMap<EyeMode, usize> = HashMap::new();
+    // The set of models that are hidden by default.
+    let mut default_hidden: HashSet<usize> = HashSet::new();
+
+    let model_name_map = o.models.iter().enumerate().map(|(i, m)| (&m.name, i))
+        .collect::<HashMap<_, _>>();
+
+    if let Some(name) = model_path.file_stem() {
+        let name = name.to_str()
+            .unwrap_or_else(|| panic!("unsupported file name {:?}", name));
+        let subobjs = anim_objs.subobjects.get(name).or_else(|| {
+            // If the name ends with a `_lodN` prefix, try changing to `_lod0` through `_lod2`.
+            if name.len() < 5 {
+                return None;
+            }
+            let (a, b) = name.split_at(name.len() - 5);
+            if !b.starts_with("_lod") {
+                return None;
+            }
+            for i in 0 ..= 2 {
+                let alt_name = format!("{}_lod{}", a, i);
+                if let Some(subobjs) = anim_objs.subobjects.get(&alt_name) {
+                    return Some(subobjs);
+                }
+            }
+            None
+        });
+
+        if let Some(subobjs) = subobjs {
+            for so in subobjs {
+                if let Some(&idx) = model_name_map.get(&so.model_name) {
+                    subobject_map.insert(so.xml_id.clone(), idx);
+                    if !so.default_visible {
+                        default_hidden.insert(idx);
+                    }
+                }
+            }
+        }
+    }
+
+    for (idx, m) in o.models.iter().enumerate() {
+        if m.name.ends_with("_eyes_open") {
+            eye_map.insert(EyeMode::Open, idx);
+            // Leave visible by default
+        } else if m.name.ends_with("_eyes_shut") {
+            eye_map.insert(EyeMode::Closed, idx);
+            default_hidden.insert(idx);
+        } else if m.name.ends_with("_eyes_happy") {
+            eye_map.insert(EyeMode::Happy, idx);
+            default_hidden.insert(idx);
+        } else if m.name.ends_with("_eyes_frown") {
+            eye_map.insert(EyeMode::Frown, idx);
+            default_hidden.insert(idx);
+        }
+    }
+
+    // Indices of models with animated visibility.
+    let visibility_animated_models = subobject_map.values().cloned()
+        .chain(eye_map.values().cloned())
+        .collect::<Vec<_>>();
+
+
+    // Compute which bones need extra subbones for model visibility animations.
+
+    // Pairs of visibility-animated model index and bone index, where the bone affects at least one
+    // vertex of the model.
+    let mut model_bone_pairs_vis = HashSet::<(usize, usize)>::new();
+    for &i in &visibility_animated_models {
+        let m = &o.models[i];
+        for tri in &m.tris {
+            for &j in &tri.verts {
+                for bw in &m.verts[j].bone_weights {
+                     if bw.weight != 0 {
+                         model_bone_pairs_vis.insert((i, bw.bone));
+                     }
+                }
+            }
+        }
+    }
+    let mut model_bone_pairs_vis = model_bone_pairs_vis.into_iter().collect::<Vec<_>>();
+    model_bone_pairs_vis.sort();
+    let model_bone_pairs_vis = model_bone_pairs_vis;
+
+
     // Build GLTF
 
     let mut gltf = GltfBuilder::default();
@@ -699,8 +784,9 @@ fn main() -> io::Result<()> {
         bone_mats_inv.push(bone_mat.try_inverse().unwrap());
     }
 
-    let mut bone_nodes = Vec::with_capacity(o.bones.len());
+    let mut all_bone_nodes = Vec::with_capacity(o.bones.len());
     let mut inverse_bind_matrices_vec = Vec::with_capacity(o.bones.len());
+
     for (i, b) in o.bones.iter().enumerate() {
         let local_mat = match b.parent {
             None => bone_mats[i],
@@ -730,8 +816,13 @@ fn main() -> io::Result<()> {
             extensions: None,
             extras: Default::default(),
         });
-        bone_nodes.push(node_idx);
+        all_bone_nodes.push(node_idx);
     }
+
+    // `bone_nodes` contains only the nodes corresponding to bones in the original `Object`.
+    // `all_bone_nodes` contains all bones, including additional ones created for model visibility
+    // animations.
+    let bone_nodes = all_bone_nodes.clone();
 
     // Set bone parents
     for (i, b) in o.bones.iter().enumerate() {
@@ -740,6 +831,44 @@ fn main() -> io::Result<()> {
             let parent_idx = bone_nodes[j];
             gltf.node_mut(parent_idx).children.get_or_insert_with(Vec::new).push(bone_idx);
         }
+    }
+
+    // Add visibility control bones.  We add these last so the real bones keep their original
+    // indices in `bone_nodes` and `inverse_bind_matrices`.
+
+    // Maps model index to node IDs of extra bones introduced to control visibility of the model.
+    let mut model_vis_bones = HashMap::<usize, Vec<Index<Node>>>::new();
+    // Maps old bone index to new bone index for certain models.  This is used to adjust vertex
+    // weights so that visibility-animated models influenced by bone B will instead be influenced
+    // by their visibility control bone whose parent is B.
+    let mut model_bone_maps = HashMap::<usize, HashMap<usize, usize>>::new();
+
+    for (mi, bi) in model_bone_pairs_vis {
+        // The visibility control bone uses the same inverse bind matrix as its parent, so the
+        // transform from world space to bone space is the same.  And by default the child bone
+        // applies no transforms relative to its parent, so the transform from bone space back to
+        // world space is also the same.
+        let vis_bone_idx = gltf.push_node(Node {
+            camera: None,
+            children: None,
+            matrix: None,
+            mesh: None,
+            rotation: None,
+            scale: None,
+            translation: None,
+            skin: None,
+            weights: None,
+            name: Some(format!("{}__vis__{}", o.bones[bi].name, o.models[mi].name)),
+            extensions: None,
+            extras: Default::default(),
+        });
+        let bone_idx = bone_nodes[bi];
+        gltf.node_mut(bone_idx).children.get_or_insert_with(Vec::new).push(vis_bone_idx);
+        let vis_bi = all_bone_nodes.len();
+        model_vis_bones.entry(mi).or_insert_with(Vec::new).push(vis_bone_idx);
+        model_bone_maps.entry(mi).or_insert_with(HashMap::new).insert(bi, vis_bi);
+        all_bone_nodes.push(vis_bone_idx);
+        inverse_bind_matrices_vec.push(bone_mats_inv[bi]);
     }
 
     let bone_root_idx = gltf.push_node(Node {
@@ -762,7 +891,7 @@ fn main() -> io::Result<()> {
     let inverse_bind_matrices_acc = gltf.push_prim_accessor(
         &inverse_bind_matrices_vec, None, false);
     let skin_idx = gltf.push_skin(Skin {
-        joints: bone_nodes.clone(),
+        joints: all_bone_nodes,
         skeleton: Some(bone_root_idx),
         inverse_bind_matrices: Some(inverse_bind_matrices_acc),
         name: None,
@@ -773,7 +902,7 @@ fn main() -> io::Result<()> {
     // Meshes
 
     let mut model_nodes = Vec::with_capacity(o.models.len());
-    for m in &o.models {
+    for (mi, m) in o.models.iter().enumerate() {
         let mut attributes = HashMap::new();
 
         let pos_vec = m.tris.iter()
@@ -790,12 +919,17 @@ fn main() -> io::Result<()> {
         attributes.insert(Checked::Valid(Semantic::TexCoords(0)),
             gltf.push_prim_accessor(&uv_vec, Some(buffer::Target::ArrayBuffer), false));
 
+        let model_bone_map = model_bone_maps.get(&mi);
+        let map_bone = |bi| {
+            model_bone_map.and_then(|m| m.get(&bi).cloned()).unwrap_or(bi)
+        };
+
         // Joints and weights are specified in groups of 4.
         let joints_vec = m.tris.iter().flat_map(|t| t.verts.iter()).map(|&i| [
-            m.verts[i].bone_weights[0].bone as u16,
-            m.verts[i].bone_weights[1].bone as u16,
-            m.verts[i].bone_weights[2].bone as u16,
-            m.verts[i].bone_weights[3].bone as u16,
+            map_bone(m.verts[i].bone_weights[0].bone) as u16,
+            map_bone(m.verts[i].bone_weights[1].bone) as u16,
+            map_bone(m.verts[i].bone_weights[2].bone) as u16,
+            map_bone(m.verts[i].bone_weights[3].bone) as u16,
         ]).collect::<Vec<_>>();
         attributes.insert(Checked::Valid(Semantic::Joints(0)),
             gltf.push_prim_accessor(&joints_vec, Some(buffer::Target::ArrayBuffer), false));
@@ -861,8 +995,14 @@ fn main() -> io::Result<()> {
         for ar in &anim_ranges {
             let mut channels = Vec::with_capacity(o.bones.len());
             let mut samplers = Vec::with_capacity(o.bones.len());
+
+            let frame_times = (0 .. ar.end - ar.start).map(|i| {
+                i as f32 / ar.frame_rate as f32
+            }).collect::<Vec<_>>();
+            let frame_times_acc = gltf.push_prim_accessor(
+                &frame_times, None, false);
+
             for (i, &bone_idx) in bone_nodes.iter().enumerate() {
-                let mut frame_times = Vec::with_capacity(ar.end - ar.start);
                 let mut pos_vec = Vec::with_capacity(ar.end - ar.start);
                 let mut quat_vec = Vec::with_capacity(ar.end - ar.start);
                 for f in ar.start .. ar.end {
@@ -879,7 +1019,6 @@ fn main() -> io::Result<()> {
 
                     let (t, r, s) = decompose_bone_matrix(local_pose_mat);
 
-                    frame_times.push((f - ar.start) as f32 / ar.frame_rate as f32);
                     pos_vec.push([
                         t[0],
                         t[1],
@@ -892,9 +1031,6 @@ fn main() -> io::Result<()> {
                         r.quaternion().scalar(),
                     ]);
                 }
-
-                let frame_times_acc = gltf.push_prim_accessor(
-                    &frame_times, None, false);
 
                 // Rotation
                 channels.push(animation::Channel {
@@ -937,6 +1073,93 @@ fn main() -> io::Result<()> {
                     extensions: None,
                     extras: Default::default(),
                 });
+            }
+
+            // Object visibility
+
+            let mut model_vis_anims = HashMap::<usize, Vec<(usize, bool)>>::new();
+            let mut record = |frame, mi, show| {
+                let vis = model_vis_anims.entry(mi).or_insert_with(Vec::new);
+                if let Some(last) = vis.last_mut().filter(|& &mut (f, _)| f == frame) {
+                    last.1 = show;
+                } else {
+                    vis.push((frame, show));
+                }
+            };
+            for &i in &default_hidden {
+                record(0, i, false);
+            }
+            let frame_objs = anim_objs.anims.get(&ar.name).map_or(&[] as &[_], |x| x);
+            for f in frame_objs {
+                if let Some(ref eye_state) = f.eye_state {
+                    for (&mode, &mi) in &eye_map {
+                        record(f.index, mi, mode == eye_state.mode);
+                    }
+                }
+
+                for (model_name, &show) in &f.subobject_state {
+                    if let Some(&mi) = subobject_map.get(model_name) {
+                        record(f.index, mi, show);
+                    }
+                }
+            }
+
+            for (i, m) in o.models.iter().enumerate() {
+                let vis_bones = match model_vis_bones.get(&i) {
+                    Some(x) => x,
+                    None => continue,
+                };
+
+                let vis_anims = match model_vis_anims.get(&i) {
+                    Some(x) => x,
+                    None => continue,
+                };
+
+                //eprintln!("visibility anims for {}, {} = {:?}", ar.name, m.name, vis_anims);
+
+                let mut frame_times = Vec::with_capacity(ar.end - ar.start);
+                let mut scale_vec = Vec::new();
+                // If `vis_anims` doesn't specify the initial state, we explicitly show the model
+                // on frame 0.  Otherwise, the state from the first keyframe will be used instead,
+                // which is often incorrect (e.g. default is visible, but there's a keyframe on
+                // frame 20 to hide it).
+                if !vis_anims.get(0).map_or(false, |&(f, _)| f == 0) {
+                    frame_times.push(0.);
+                    scale_vec.push([1., 1., 1.]);
+                }
+                for &(frame, show) in vis_anims {
+                    frame_times.push(frame as f32 / ar.frame_rate as f32);
+                    if show {
+                        scale_vec.push([1., 1., 1.]);
+                    } else {
+                        scale_vec.push([0., 0., 0.]);
+                    }
+                }
+
+                let frame_times_acc = gltf.push_prim_accessor(
+                    &frame_times, None, false);
+
+                for &vis_bone_idx in vis_bones {
+                    channels.push(animation::Channel {
+                        sampler: Index::new(samplers.len() as u32),
+                        target: animation::Target {
+                            node: vis_bone_idx,
+                            path: Checked::Valid(animation::Property::Scale),
+                            extensions: None,
+                            extras: Default::default(),
+                        },
+                        extensions: None,
+                        extras: Default::default(),
+                    });
+                    samplers.push(animation::Sampler {
+                        input: frame_times_acc,
+                        output: gltf.push_prim_accessor(
+                                   &scale_vec, None, false),
+                        interpolation: Checked::Valid(animation::Interpolation::Step),
+                        extensions: None,
+                        extras: Default::default(),
+                    });
+                }
             }
 
             gltf.push_animation(Animation {

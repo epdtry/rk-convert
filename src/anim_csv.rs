@@ -2,6 +2,7 @@ use std::io;
 use std::path::Path;
 use csv;
 
+#[derive(Clone, Debug)]
 pub struct AnimRange {
     pub name: String,
     pub start: usize,
