@@ -688,6 +688,15 @@ fn main() -> io::Result<()> {
 
 
     // Compute which bones need extra subbones for model visibility animations.
+    //
+    // glTF does not support proper visibility animation.  The usual workaround (as seen in
+    // https://github.com/KhronosGroup/glTF/issues/1314) is to hide objects by setting their scale
+    // to zero.  But skinned meshes cannot have their scale property animated.  Instead what we do
+    // is give each visibility-animated model its own set of bones (for each bone that appears in
+    // its vertex weights, we add a new child bone specifically for this model) and scale all those
+    // bones to zero when the object should be hidden.  This is a hack and means that rendering may
+    // still pay the cost for all those "hidden" objects, but it works in standard glTF and should
+    // be supported by essentially all readers.
 
     // Pairs of visibility-animated model index and bone index, where the bone affects at least one
     // vertex of the model.
