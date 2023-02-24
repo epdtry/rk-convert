@@ -161,13 +161,43 @@ impl<T: Read + Seek> ModelFile<T> {
         }
     }
 
+    pub fn read_vertex_section(
+        &mut self,
+        headers: &[SectionHeader],
+        tag: u32,
+    ) -> io::Result<Vec<([f32; 3], [i16; 2])>> {
+        if let Some(h) = headers.iter().find(|h| h.tag == tag) {
+            let item_size = h.byte_length / h.count;
+            match item_size {
+                16 => self.read_tagged_section_with(headers, tag, |f| {
+                    let pos: [f32; 3] = f.read_one()?;
+                    let uv: [i16; 2] = f.read_one()?;
+                    Ok((pos, uv))
+                }),
+                28 => self.read_tagged_section_with(headers, tag, |f| {
+                    let pos: [f32; 3] = f.read_one()?;
+                    let unk1: [u16; 4] = f.read_one()?;
+                    let uv: [i16; 2] = f.read_one()?;
+                    let unk2: u32 = f.read_one()?;
+                    // Debug print for inspecting the unknown field values:
+                    //println!("vertex: {:?}, {:x?}, {:?}, {:x}", pos, unk1, uv, unk2);
+                    Ok((pos, uv))
+                }),
+                _ => panic!(
+                    "bad item size {} for vertex section; expected 16 or 28 bytes", item_size),
+            }
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
     pub fn read_object(&mut self) -> io::Result<Object> {
         let mut m = Model::default();
         let mut o = Object::default();
 
         let mut headers = self.read_headers()?;
 
-        let verts: Vec<([f32; 3], [i16; 2])> = self.read_tagged_section(&headers, SEC_VERTEX)?;
+        let verts: Vec<([f32; 3], [i16; 2])> = self.read_vertex_section(&headers, SEC_VERTEX)?;
         let indices: Vec<u16> = self.read_tagged_section(&headers, SEC_FACE)?;
         let part_names: Vec<String> =
             self.read_tagged_section_with(&headers, SEC_SUBOBJ_NAME, |r| {
