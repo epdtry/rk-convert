@@ -174,6 +174,15 @@ impl<T: Read + Seek> ModelFile<T> {
                     let uv: [i16; 2] = f.read_one()?;
                     Ok((pos, uv))
                 }),
+                20 => self.read_tagged_section_with(headers, tag, |f| {
+                    let pos: [f32; 3] = f.read_one()?;
+                    let uv: [f32; 2] = f.read_one()?;
+                    let uv: [i16; 2] = [
+                        (uv[0] * 32767.) as i16,
+                        (uv[1] * 32767.) as i16,
+                    ];
+                    Ok((pos, uv))
+                }),
                 28 => self.read_tagged_section_with(headers, tag, |f| {
                     let pos: [f32; 3] = f.read_one()?;
                     let unk1: [u16; 4] = f.read_one()?;
@@ -184,7 +193,7 @@ impl<T: Read + Seek> ModelFile<T> {
                     Ok((pos, uv))
                 }),
                 _ => panic!(
-                    "bad item size {} for vertex section; expected 16 or 28 bytes", item_size),
+                    "bad item size {} for vertex section", item_size),
             }
         } else {
             Ok(Vec::new())
