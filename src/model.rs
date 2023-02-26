@@ -230,6 +230,8 @@ impl<T: Read + Seek> ModelFile<T> {
 
         let mut headers = self.read_headers()?;
 
+        //self.dump_tagged_section(&headers, SEC_VERTEX)?;
+
         let verts: Vec<([f32; 3], [i16; 2])> = self.read_vertex_section(&headers, SEC_VERTEX)?;
         let indices: Vec<u32> = self.read_face_section(&headers, SEC_FACE)?;
         let part_names: Vec<String> =
@@ -340,6 +342,43 @@ impl<T: Read + Seek> ModelFile<T> {
         }
 
         Ok(o)
+    }
+
+    /// Print a hex dump of the section, for debugging.
+    fn dump_tagged_section(
+        &mut self,
+        headers: &[SectionHeader],
+        tag: u32,
+    ) -> io::Result<()> {
+        let header = match headers.iter().find(|h| h.tag == tag) {
+            Some(x) => x,
+            None => return Ok(()),
+        };
+
+        self.file.seek(SeekFrom::Start(header.offset as u64))?;
+
+        if header.byte_length % header.count != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("section {}: bad layout: count {} does not divide byte length {}",
+                    header.tag, header.count, header.byte_length),
+            ));
+        }
+        let item_size = header.byte_length / header.count;
+
+        let mut buf = vec![0_u8; item_size as usize];
+        for i in 0..header.count {
+            self.file.read_exact(&mut buf)?;
+            for (j, b) in buf.iter().cloned().enumerate() {
+                if j % 2 == 0 && j > 0 {
+                    print!(" ");
+                }
+                print!("{:02x}", b);
+            }
+            println!();
+        }
+
+        Ok(())
     }
 }
 
