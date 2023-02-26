@@ -332,8 +332,10 @@ impl<T: Read + Seek> ModelFile<T> {
 
         if materials.len() != 0 {
             for &(ref names, _) in &materials {
-                assert!(names.iter().all(|s| s.len() == 0 || s == &names[0]),
-                    "expected all material names to match, but got {:?}", names);
+                if !names.iter().all(|s| s.len() == 0 || s == &names[0]) {
+                    eprintln!("warning: expected all material names to match, but got {:?}",
+                        names);
+                }
             }
         }
 
