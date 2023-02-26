@@ -191,6 +191,30 @@ impl<T: Read + Seek> ModelFile<T> {
         }
     }
 
+    pub fn read_face_section(
+        &mut self,
+        headers: &[SectionHeader],
+        tag: u32,
+    ) -> io::Result<Vec<u32>> {
+        if let Some(h) = headers.iter().find(|h| h.tag == tag) {
+            let item_size = h.byte_length / h.count;
+            match item_size {
+                2 => self.read_tagged_section_with(headers, tag, |f| {
+                    let idx: u16 = f.read_one()?;
+                    Ok(idx as u32)
+                }),
+                4 => self.read_tagged_section_with(headers, tag, |f| {
+                    let idx: u32 = f.read_one()?;
+                    Ok(idx)
+                }),
+                _ => panic!(
+                    "bad item size {} for face section; expected 2 or 4 bytes", item_size),
+            }
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
     pub fn read_object(&mut self) -> io::Result<Object> {
         let mut m = Model::default();
         let mut o = Object::default();
@@ -198,7 +222,7 @@ impl<T: Read + Seek> ModelFile<T> {
         let mut headers = self.read_headers()?;
 
         let verts: Vec<([f32; 3], [i16; 2])> = self.read_vertex_section(&headers, SEC_VERTEX)?;
-        let indices: Vec<u16> = self.read_tagged_section(&headers, SEC_FACE)?;
+        let indices: Vec<u32> = self.read_face_section(&headers, SEC_FACE)?;
         let part_names: Vec<String> =
             self.read_tagged_section_with(&headers, SEC_SUBOBJ_NAME, |r| {
                 r.read_fixed_str(&mut [0; 64])
